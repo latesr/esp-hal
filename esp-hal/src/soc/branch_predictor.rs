@@ -19,15 +19,16 @@ pub(crate) fn enable() {
     }
 }
 
+// With code in PSRAM, flash operations keep the cache on, so only the sleep paths use the guard.
 #[cfg(any(
-    feature = "unstable",
+    all(feature = "unstable", not(code_in_psram)),
     all(multi_core, feature = "rt"),
     cpu_retention = "software"
 ))]
 pub(crate) use guard::DisabledBranchPredictor;
 
 #[cfg(any(
-    feature = "unstable",
+    all(feature = "unstable", not(code_in_psram)),
     all(multi_core, feature = "rt"),
     cpu_retention = "software"
 ))]
