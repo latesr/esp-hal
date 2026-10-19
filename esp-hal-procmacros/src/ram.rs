@@ -15,6 +15,7 @@ pub fn ram(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut persistent = false;
     let mut zeroed = false;
     let mut uncached = false;
+    let mut psram = false;
 
     for attr_arg in &attr_args {
         match attr_arg {
@@ -45,6 +46,7 @@ pub fn ram(args: TokenStream, input: TokenStream) -> TokenStream {
                                 i if i == "dcache_reclaimed" => &mut dcache_reclaimed,
                                 i if i == "zeroed" => &mut zeroed,
                                 i if i == "uncached" => &mut uncached,
+                                i if i == "psram" => &mut psram,
                                 i => {
                                     return syn::Error::new(
                                         i.span(),
@@ -158,6 +160,41 @@ pub fn ram(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let is_fn = matches!(item, Item::Fn(_));
 
+    if psram {
+        let name = match &item {
+            Item::Static(static_item)
+                if !(rtc_fast
+                    || rtc_slow
+                    || dram2_uninit
+                    || dcache_reclaimed
+                    || uncached
+                    || persistent) =>
+            {
+                static_item.ident.to_string()
+            }
+            _ => {
+                return syn::Error::new(Span::call_site(), "Invalid combination of ram arguments")
+                    .into_compile_error();
+            }
+        };
+        if !zeroed {
+            return syn::Error::new(
+                Span::call_site(),
+                "`psram` needs `zeroed`: the start-up zeroes PSRAM statics",
+            )
+            .into_compile_error();
+        }
+
+        // The compiler emits a static as NOBITS, and rejects an initializer that is not all zero
+        // bytes, only when the section name starts with `.bss`.
+        let hal = hal_crate();
+        return quote::quote! {
+            #[unsafe(link_section = ::core::concat!(".bss.psram.", ::core::module_path!(), ".", #name))]
+            #item
+            const _: () = #hal::__macro_implementation::assert_psram_available();
+        };
+    }
+
     // The memory option comes before the initialization option.
     let options = [
         (rtc_fast, "rtc_fast"),
@@ -243,15 +280,7 @@ pub fn ram(args: TokenStream, input: TokenStream) -> TokenStream {
         None
     };
     let trait_check = trait_check.map(|name| {
-        use proc_macro_crate::{FoundCrate, crate_name};
-
-        let hal = Ident::new(
-            match crate_name("esp-hal") {
-                Ok(FoundCrate::Name(ref name)) => name,
-                _ => "crate",
-            },
-            Span::call_site(),
-        );
+        let hal = hal_crate();
 
         let assertion = quote::format_ident!("assert_is_{name}");
         let Item::Static(ref item) = item else {
@@ -278,6 +307,18 @@ fn is_naked(attrs: &[syn::Attribute]) -> bool {
                     .parse_args::<syn::Path>()
                     .is_ok_and(|path| path.is_ident("naked")))
     })
+}
+
+fn hal_crate() -> Ident {
+    use proc_macro_crate::{FoundCrate, crate_name};
+
+    Ident::new(
+        match crate_name("esp-hal") {
+            Ok(FoundCrate::Name(ref name)) => name,
+            _ => "crate",
+        },
+        Span::call_site(),
+    )
 }
 
 #[cfg(test)]
@@ -635,6 +676,119 @@ mod tests {
                 #[unsafe (link_section = ::core::concat!(".rtc_slow.persistent.", ::core::module_path!(), ".", "FOO"))]
                 static mut FOO:[u8;10] = [0;10];
                 const _: () = crate::__macro_implementation::assert_is_persistable::<[u8; 10]>();
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_psram_data_zeroed() {
+        let result = ram(
+            quote::quote! {
+                unstable(psram,zeroed)
+            }
+            .into(),
+            quote::quote! {
+                static mut FOO: [u8; 10] = [0; 10];
+            }
+            .into(),
+        );
+
+        assert_eq!(
+            result.to_string(),
+            quote::quote! {
+                #[unsafe(link_section = ::core::concat!(".bss.psram.", ::core::module_path!(), ".", "FOO"))]
+                static mut FOO:[u8;10] = [0;10];
+                const _: () = crate::__macro_implementation::assert_psram_available();
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_psram_needs_zeroed() {
+        let result = ram(
+            quote::quote! {
+                unstable(psram)
+            }
+            .into(),
+            quote::quote! {
+                static mut FOO: [u8; 10] = [0; 10];
+            }
+            .into(),
+        );
+
+        assert_eq!(
+            result.to_string(),
+            quote::quote! {
+                ::core::compile_error!{ "`psram` needs `zeroed`: the start-up zeroes PSRAM statics" }
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_psram_persistent() {
+        let result = ram(
+            quote::quote! {
+                unstable(psram,persistent)
+            }
+            .into(),
+            quote::quote! {
+                static mut FOO: [u8; 10] = [0; 10];
+            }
+            .into(),
+        );
+
+        assert_eq!(
+            result.to_string(),
+            quote::quote! {
+                ::core::compile_error!{ "Invalid combination of ram arguments" }
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_psram_fn() {
+        let result = ram(
+            quote::quote! {
+                unstable(psram,zeroed)
+            }
+            .into(),
+            quote::quote! {
+                fn foo() {}
+            }
+            .into(),
+        );
+
+        assert_eq!(
+            result.to_string(),
+            quote::quote! {
+                ::core::compile_error!{ "Invalid combination of ram arguments" }
+            }
+            .to_string()
+        );
+    }
+
+    #[cfg(feature = "rtc-fast")]
+    #[test]
+    fn test_psram_rtc_fast() {
+        let result = ram(
+            quote::quote! {
+                unstable(psram,rtc_fast,zeroed)
+            }
+            .into(),
+            quote::quote! {
+                static mut FOO: [u8; 10] = [0; 10];
+            }
+            .into(),
+        );
+
+        assert_eq!(
+            result.to_string(),
+            quote::quote! {
+                ::core::compile_error!{ "Invalid combination of ram arguments" }
             }
             .to_string()
         );

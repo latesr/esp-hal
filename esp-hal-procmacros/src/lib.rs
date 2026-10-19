@@ -85,9 +85,22 @@ mod unified_main;
 /// - `reclaimed`: Memory reclaimed from the esp-idf bootloader.
 /// - `uncached`: Use internal SRAM through the L1-bypass address range. The CPU does not cache this
 ///   memory. Only available on ESP32-P4.
+/// - `psram`: Use PSRAM, with `zeroed`, on a `static`. See [the section below](#psram) for details.
 ///
 /// Using both `rtc_fast` and `rtc_slow`, or `persistent` and `zeroed`, together is an error.
 /// `checked` on a `static`, or with `rtc_fast` or `rtc_slow`, is also an error.
+///
+/// ## `psram`
+///
+/// `#[ram(unstable(psram, zeroed))]` places the `static` in PSRAM. It needs the `code-in-psram`
+/// option, on a chip whose PSRAM has its own address window, such as the ESP32-S31. The start-up
+/// that copies the code into PSRAM also zeroes these statics, before `main`. The compiler rejects
+/// an initializer that is not all zero bytes, so the type does not have to implement
+/// [`bytemuck::Zeroable`].
+///
+/// `esp_hal::init` panics if PSRAM is smaller than these statics. Before `init`, an access to a
+/// static past the end of PSRAM causes a bus fault with no message, so `init` must be called
+/// before the first access.
 ///
 /// ## `persistent`
 ///
@@ -124,6 +137,9 @@ mod unified_main;
 ///
 /// #[ram(unstable(uncached, zeroed))]
 /// static mut UNCACHE_BSS: [u8; 8] = [0; 8];
+///
+/// #[ram(unstable(psram, zeroed))]
+/// static mut SOME_PSRAM_DATA: [u8; 0x4000] = [0; 0x4000];
 /// ```
 ///
 /// See the `ram` example in `examples/qa` of the esp-hal repository for a full usage example.
