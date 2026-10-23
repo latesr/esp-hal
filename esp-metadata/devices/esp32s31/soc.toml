@@ -615,6 +615,7 @@ extmem_origin = 0x5000_0000
 idle_low_speed_switch = true
 octal_spi = true
 has_timing_tuning = true
+separate_window = true
 
 [device.pixel_accelerator]
 support_status = { status = "partial", issue = 6772 }

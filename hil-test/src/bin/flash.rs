@@ -292,7 +292,12 @@ mod tests {
         assert_eq!(via_rom, pattern);
 
         let via_cache = unsafe { read_volatile(mapped) };
-        assert_eq!(via_cache, pattern[0]);
+        if option_env!("ESP_HAL_CONFIG_CODE_IN_PSRAM") == Some("true") {
+            // `.rodata` is a copy in PSRAM, which a flash write does not change.
+            assert_eq!(via_cache, _cached);
+        } else {
+            assert_eq!(via_cache, pattern[0]);
+        }
     }
 
     #[cfg(multi_core)]
@@ -611,11 +616,20 @@ mod tests {
         let _peripherals = esp_hal::init(esp_hal::Config::default());
         let drom = flash_mmu_drom_entries();
 
-        // The linker scripts put the app's rodata at the start of the DROM window.
-        assert_eq!(
-            flash_mmu_entry_offset(drom.start),
-            Some(APP_DESC_OFFSET - 0x20)
-        );
+        if option_env!("ESP_HAL_CONFIG_CODE_IN_PSRAM") == Some("true") {
+            // The start-up unmaps flash, and keeps the offset of the app's first page.
+            assert_eq!(flash_mmu_entry_offset(drom.start), None);
+            assert_eq!(
+                flash_mmu_entry_offset(drom.end - 1),
+                Some(APP_DESC_OFFSET - 0x20)
+            );
+        } else {
+            // The linker scripts put the app's rodata at the start of the DROM window.
+            assert_eq!(
+                flash_mmu_entry_offset(drom.start),
+                Some(APP_DESC_OFFSET - 0x20)
+            );
+        }
         assert_eq!(flash_mmu_entry_offset(drom.end), None);
     }
 }

@@ -586,6 +586,12 @@ macro_rules! property {
     ("psram.hex_spi") => {
         false
     };
+    ("psram.code_in_psram") => {
+        false
+    };
+    ("psram.separate_window") => {
+        true
+    };
     ("psram.has_timing_tuning") => {
         true
     };
