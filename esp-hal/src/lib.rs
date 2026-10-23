@@ -176,7 +176,23 @@ fn main() -> ! {
 //! [profile.release.package.esp-hal]
 //! opt-level = 2
 //! ```
-//!
+#![cfg_attr(psram_separate_window, doc = "")]
+#![cfg_attr(
+    psram_separate_window,
+    doc = "The `code-in-psram` option adds a second rule. The start-up runs before the code is in \
+           PSRAM, so it must not call code outside RAM. The link fails with `prohibited cross \
+           reference from '.boot.code_in_psram'` when the start-up refers to a function in \
+           `.text` or `.rwtext`. At `opt-level` 1 or `s`, the link can take an out-of-line copy \
+           of a `core` helper from a crate built at `opt-level` 0. At `z`, rustc does not inline \
+           the register-access closures. Each crate in the build, the application included, \
+           must be built at `opt-level` 2 or 3 in each profile:"
+)]
+#![cfg_attr(psram_separate_window, doc = "")]
+#![cfg_attr(
+    psram_separate_window,
+    doc = "```toml\n[profile.dev]\nopt-level = 2\n\n[profile.release]\nopt-level = 2\n```"
+)]
+#![doc = ""]
 //! ## Don't use `core::mem::forget`
 //!
 //! You should never use `core::mem::forget` on any type defined in [esp crates].
@@ -791,6 +807,9 @@ pub fn init(config: Config) -> Peripherals {
     let mut peripherals = Peripherals::take();
 
     crate::clock::init(config.clock_config());
+
+    #[cfg(code_in_psram)]
+    crate::psram::start_with_code();
 
     // RTC domain must be enabled before we try to disable
     let mut rtc = crate::rtc_cntl::Rtc::new(peripherals.RTC_TIMER.reborrow());
