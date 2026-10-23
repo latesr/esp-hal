@@ -587,7 +587,7 @@ macro_rules! property {
         false
     };
     ("psram.code_in_psram") => {
-        false
+        true
     };
     ("psram.separate_window") => {
         true
