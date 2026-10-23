@@ -12,8 +12,9 @@ impl RegI2cMaster {
         Self { master, host_id }
     }
 
-    // Light sleep can set a PLL with the caches suspended. The accessors in this file must be
-    // inlined into the RAM caller.
+    // Light sleep can set a PLL with the caches suspended, and with code in PSRAM the start-up sets
+    // the MPLL before its code is in PSRAM. The accessors in this file must be inlined into the RAM
+    // caller.
     #[allow(unused)]
     #[inline(always)]
     pub fn write(&self, reg: u8, data: u8) {
@@ -67,8 +68,9 @@ impl RawRegI2cField {
         Self { register, msb, lsb }
     }
 
-    // The field accessors must not panic. They use wrapping operations. `new` bounds the field, so
-    // each gives the plain operation's result.
+    // The ESP32-S31 start-up calls the field accessors before its code is in PSRAM, so they must
+    // not panic. They use wrapping operations. `new` bounds the field, so each gives the plain
+    // operation's result.
 
     #[inline(always)]
     const fn mask(&self) -> u8 {
