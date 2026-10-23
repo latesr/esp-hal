@@ -562,6 +562,9 @@ macro_rules! property {
     ("psram.hex_spi") => {
         true
     };
+    ("psram.supports_code_in_psram") => {
+        false
+    };
     ("psram.has_timing_tuning") => {
         true
     };

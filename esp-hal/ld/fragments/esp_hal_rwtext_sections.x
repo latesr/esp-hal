@@ -11,3 +11,12 @@
   *:esp_rom_spiflash.*(.literal .text .literal.* .text.*)
   . = ALIGN(4);
 } > RWTEXT
+
+#IF ESP_HAL_CONFIG_CODE_IN_PSRAM
+/* The start-up that copies the code into PSRAM. See `esp_hal_checks.x`. */
+.boot.code_in_psram : ALIGN(4)
+{
+  KEEP(*(.boot.code_in_psram))
+  . = ALIGN(4);
+} > RWTEXT
+#ENDIF

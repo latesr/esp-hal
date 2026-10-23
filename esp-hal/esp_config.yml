@@ -230,6 +230,13 @@ options:
     default:
       - value: false
 
+  - name: code-in-psram
+    description: "Run `.text` and `.rodata` from PSRAM. esp-hal must be built at opt-level 2 or 3.
+      With flash encryption, the code in PSRAM is plaintext."
+    default:
+      - value: false
+    active: "false"
+
   - name: clear-crypto-secrets
     description: "Clear secret material (keys, exponents, intermediate results) from
       the crypto accelerator registers after each operation. Disabling
