@@ -89,7 +89,8 @@ impl RawRegI2cField {
     /// Writes the field through `read` and `write`, which take the master, its host ID and the
     /// register address, like `regi2c_read` and `regi2c_write`.
     ///
-    /// Code that runs with the caches suspended passes accessors in RAM.
+    /// Code that runs with the caches suspended passes accessors in RAM, and this function must not
+    /// panic.
     #[allow(unused)]
     #[inline(always)]
     pub fn write_field_with(
