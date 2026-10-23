@@ -235,7 +235,7 @@ options:
       With flash encryption, the code in PSRAM is plaintext."
     default:
       - value: false
-    active: "false"
+    active: "psram_supports_code_in_psram"
 
   - name: clear-crypto-secrets
     description: "Clear secret material (keys, exponents, intermediate results) from

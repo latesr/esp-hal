@@ -102,6 +102,14 @@ pub(crate) fn psram_range() -> Range<usize> {
     if end < start { 0..0 } else { start..end }
 }
 
+/// Returns whether PSRAM holds anything that must survive a sleep: the heap, or with code in
+/// PSRAM the code, even when the heap is empty.
+#[allow(unused)]
+#[inline(always)]
+pub(crate) fn in_use() -> bool {
+    cfg!(code_in_psram) || !psram_range().is_empty()
+}
+
 /// # Safety
 ///
 /// Must only be called once.
@@ -136,6 +144,11 @@ pub(crate) fn start_with_code() {
 
 impl Psram {
     /// Initializes PSRAM.
+    #[cfg_attr(
+        psram_supports_code_in_psram,
+        doc = "\n\nWith `code-in-psram`, PSRAM is already started before `esp_hal::init`. `new` logs \
+               a warning if `config` is not the default, and PSRAM does not change."
+    )]
     pub fn new(
         peri: PSRAM<'static>,
         #[cfg_attr(code_in_psram, allow(unused_mut))] mut config: PsramConfig,

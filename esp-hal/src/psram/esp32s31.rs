@@ -122,6 +122,7 @@ impl PsramTimingParams {
 }
 
 /// Initializes PSRAM.
+#[cfg(not(code_in_psram))]
 #[crate::ram]
 pub(crate) fn init_psram(config: &mut PsramConfig) -> bool {
     // Module clock + clock source
@@ -137,12 +138,7 @@ pub(crate) fn init_psram(config: &mut PsramConfig) -> bool {
     if !oct_hex::set_bus_clock(config.timing.clock) {
         return false;
     }
-    oct_hex::enable_dll();
-    oct_hex::psram_pad_init(false); // required for DDR strobe latch
-    oct_hex::set_cs_timing();
-
-    // SoC MR init (via MSPI3 SPI direct)
-    oct_hex::init_mr_registers(&config.timing, false);
+    start_chip(&config.timing);
 
     if config.size.is_auto() {
         config.size = PsramSize::Size(oct_hex::psram_detect_size(&config.timing));
@@ -155,17 +151,32 @@ pub(crate) fn init_psram(config: &mut PsramConfig) -> bool {
     true
 }
 
+/// Brings up the controller's DLL and pads, and the PSRAM chip at `timing`, once the bus clock is
+/// set.
+#[inline(always)]
+fn start_chip(timing: &PsramTimingParams) {
+    oct_hex::enable_dll();
+    oct_hex::psram_pad_init(false); // required for DDR strobe latch
+    oct_hex::set_cs_timing();
+
+    // SoC MR init (via MSPI3 SPI direct)
+    oct_hex::init_mr_registers(timing, false);
+}
+
+#[cfg(not(code_in_psram))]
 pub(crate) fn map_psram(config: PsramConfig) -> core::ops::Range<usize> {
     let start = EXTMEM_ORIGIN;
     start..start + config.size.get()
 }
 
+#[cfg_attr(code_in_psram, inline(always))]
 fn enable_psram_mspi() {
     HP_SYS_CLKRST::regs()
         .psram_ctrl0()
         .modify(|_, w| w.sys_clk_en().set_bit());
 }
 
+#[cfg_attr(code_in_psram, inline(always))]
 fn reset_psram_mspi() {
     HP_SYS_CLKRST::regs().psram_ctrl0().modify(|_, w| {
         w.axi_rst_en().set_bit();
@@ -175,4 +186,153 @@ fn reset_psram_mspi() {
         w.axi_rst_en().clear_bit();
         w.apb_rst_en().clear_bit()
     });
+}
+
+#[cfg(code_in_psram)]
+pub(crate) use start::*;
+
+/// Code in PSRAM: the ESP32-S31's parts of the start-up in [`super::code_in_psram`].
+///
+/// Neither `.text` nor `.rodata` is in PSRAM while the start-up runs, so every function here
+/// except `request_clock` must be inlined into `riscv_preinit`.
+#[cfg(code_in_psram)]
+mod start {
+    use super::*;
+    use crate::{
+        peripherals::{MEMSPI2, SPI0},
+        psram::code_in_psram::stop,
+    };
+
+    /// Gives PSRAM's clock to the clock tree, which then keeps it on. The start-up configured the
+    /// clock without the tree.
+    pub(crate) fn request_clock() {
+        ClockTree::with(|clocks| {
+            PsramInstance::Psram.configure_function_clock(clocks, PsramFunctionClockConfig::Mpll);
+            PsramInstance::Psram.request_function_clock(clocks);
+        });
+    }
+
+    const PSRAM_PAGE: u32 = 0x1_0000;
+    pub(crate) const FLASH_WINDOW: u32 = 0x4000_0000;
+    pub(crate) const FLASH_VALID: u32 = 1 << 12;
+    pub(crate) const FLASH_SENSITIVE: u32 = 1 << 13;
+    pub(crate) const FLASH_PADDR: u32 = 0x7ff;
+    pub(crate) const IMAGE_CHIP_ID: u32 = 0x0020;
+    const ICACHES: u32 = 0b11;
+    const DCACHE: u32 = 1 << 4;
+
+    /// The start-up's MPLL rate, for PSRAM at 200 MHz.
+    const MPLL_MHZ: u32 = 400;
+
+    unsafe extern "C" {
+        fn Cache_WriteBack_Addr(map: u32, addr: u32, size: u32);
+    }
+
+    #[inline(always)]
+    pub(crate) fn flash_entry(i: u32) -> u32 {
+        SPI0::regs()
+            .mmu_item_index()
+            .write(|w| unsafe { w.bits(i) });
+        SPI0::regs().mmu_item_content().read().bits()
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_flash_entry(i: u32, content: u32) {
+        SPI0::regs()
+            .mmu_item_index()
+            .write(|w| unsafe { w.bits(i) });
+        SPI0::regs()
+            .mmu_item_content()
+            .write(|w| unsafe { w.bits(content) });
+    }
+
+    #[inline(always)]
+    pub(crate) fn flash_page_shift() -> u32 {
+        // Code 0 is 256 KiB, and each code above halves it.
+        // See <https://github.com/espressif/esp-idf/blob/383dda6c182/components/esp_hal_cache/esp32s31/include/hal/mmu_ll.h#L125-L147>.
+        let code = SPI0::regs().mmu_power_ctrl().read().mmu_page_size().bits() as u32;
+        18u32.wrapping_sub(code)
+    }
+
+    #[inline(always)]
+    pub(crate) fn efuse_block0() -> u32 {
+        crate::peripherals::EFUSE::regs().rd_wr_dis().as_ptr() as u32
+    }
+
+    // The write-back runs twice, as in the ESP-IDF patch of `Cache_WriteBack_Addr`.
+    // See <https://github.com/espressif/esp-idf/blob/383dda6c182/components/esp_rom/patches/esp_rom_cache_writeback_esp32p4_esp32s31.c#L46-L50>.
+    #[inline(always)]
+    pub(crate) fn cache_writeback(addr: u32, size: u32) {
+        unsafe {
+            Cache_WriteBack_Addr(DCACHE, addr, size);
+            Cache_WriteBack_Addr(DCACHE, addr, size);
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn cache_invalidate(addr: u32, size: u32) {
+        crate::soc::invalidate_cache(ICACHES | DCACHE, addr, size);
+    }
+
+    /// Invalidates the instruction caches over `addr..addr + size`. The data cache lines of the
+    /// copy are already written back, so only the instruction caches can hold stale code.
+    #[inline(always)]
+    pub(crate) fn cache_invalidate_code(addr: u32, size: u32) {
+        crate::soc::invalidate_cache(ICACHES, addr, size);
+    }
+
+    #[inline(always)]
+    fn hart_id() -> u32 {
+        let id: u32;
+        unsafe { core::arch::asm!("csrr {0}, mhartid", out(reg) id) };
+        id
+    }
+
+    /// Holds core 1 in reset when the start-up runs on core 0. Core 1 waits in ROM and must not
+    /// run before the code is in PSRAM. The ROM can enter on either core, as in `pre_init`.
+    #[inline(always)]
+    pub(crate) fn park_other_core() {
+        if hart_id() == 0 {
+            HP_SYS_CLKRST::regs().hpcore1_ctrl0().modify(|_, w| {
+                w.core1_cpu_clk_en().clear_bit();
+                w.core1_clic_clk_en().clear_bit();
+                w.core1_global_rst_en().set_bit()
+            });
+        }
+    }
+
+    /// Starts the MPLL and PSRAM, maps PSRAM page i at window page i, and returns its size.
+    #[inline(always)]
+    pub(crate) fn start_psram() -> usize {
+        crate::soc::clocks::start_mpll(MPLL_MHZ);
+        enable_psram_mspi();
+        reset_psram_mspi();
+        HP_SYS_CLKRST::regs().psram_ctrl0().modify(|_, w| unsafe {
+            w.clk_src_sel().bits(1);
+            w.pll_clk_en().set_bit();
+            w.core_clk_en().set_bit()
+        });
+        let timing = PsramTimingParams::MHZ_200;
+        if !oct_hex::set_bus_clock_from(MPLL_MHZ, timing.clock) {
+            stop(0x101);
+        }
+        super::start_chip(&timing);
+        let Ok(size) = oct_hex::try_psram_detect_size(&timing) else {
+            stop(0x102);
+        };
+        oct_hex::configure_psram_mspi(&timing, false);
+
+        // The PSRAM MMU's code 0 is 64 KiB, and the flash MMU's is 256 KiB.
+        // See <https://github.com/espressif/esp-idf/blob/383dda6c182/components/esp_hal_cache/esp32s31/include/hal/mmu_ll.h#L125-L147>.
+        MEMSPI2::regs()
+            .mmu_power_ctrl()
+            .modify(|_, w| unsafe { w.mmu_page_size().bits(0) });
+        let mut page = 0;
+        while page < size as u32 / PSRAM_PAGE {
+            oct_hex::write_psram_mmu_entry(page, page as u16);
+            page = page.wrapping_add(1);
+        }
+        crate::soc::invalidate_cache(DCACHE, EXTMEM_ORIGIN as u32, size as u32);
+        size
+    }
 }

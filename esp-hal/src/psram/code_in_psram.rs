@@ -25,6 +25,8 @@ pub(crate) static APP_OFFSET: AtomicU32 = AtomicU32::new(0);
 ///
 /// The start-up stops with:
 ///
+/// - 0x101 (ESP32-S31): the MPLL cannot clock PSRAM at 200 MHz.
+/// - 0x102 (ESP32-S31): PSRAM reports an unknown size.
 /// - 0x301: no flash MMU entry maps the app, or no entry is free.
 /// - 0x402: a segment is not word-sized, is out of order or overlaps, or lies past the end of
 ///   PSRAM.

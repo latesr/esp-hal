@@ -629,7 +629,7 @@ macro_rules! property {
         false
     };
     ("psram.supports_code_in_psram") => {
-        false
+        true
     };
     ("psram.has_timing_tuning") => {
         true

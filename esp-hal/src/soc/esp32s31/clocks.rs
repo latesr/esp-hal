@@ -8,6 +8,9 @@
     reason = "Clock-tree types come from generated macro code"
 )]
 
+#[cfg(code_in_psram)]
+use portable_atomic::{AtomicU32, Ordering};
+
 use crate::{
     peripherals::{HP_ALIVE_SYS, HP_SYS, HP_SYS_CLKRST, LP_AON_CLK_RST, MODEM_LPCON, PMU},
     soc::{regi2c, update_bus_clocks, with_single_bus_clock_update, xtal32k},
@@ -15,7 +18,8 @@ use crate::{
 
 /// The crystal frequency in MHz. The S31 supports only a 40 MHz crystal (`SOC_XTAL_SUPPORT_40M`).
 ///
-/// Light sleep uses this constant, because `xtal_clk_frequency` does not run from RAM.
+/// Light sleep, which suspends the caches, and the code-in-PSRAM start-up use this constant,
+/// because `xtal_clk_frequency` is in `.text`.
 pub(crate) const XTAL_MHZ: u32 = 40;
 
 define_clock_tree_types!();
@@ -39,9 +43,11 @@ pub enum CpuClock {
 }
 
 impl CpuClock {
+    const PRESET_MPLL: MpllClkConfig = MpllClkConfig::_400;
+
     const PRESET_160: ClockConfig = ClockConfig {
         cpu_root_clk: Some(CpuRootClkConfig::Cpll),
-        mpll_clk: Some(MpllClkConfig::_400),
+        mpll_clk: Some(Self::PRESET_MPLL),
         cpu_clk: Some(CpuClkConfig::new(1)),
         mem_clk: Some(MemClkConfig::new(0)), // Max 160 MHz
         sys_clk: Some(SysClkConfig::new(1)), // Max ~320/3 MHz
@@ -59,7 +65,7 @@ impl CpuClock {
     };
     const PRESET_240: ClockConfig = ClockConfig {
         cpu_root_clk: Some(CpuRootClkConfig::PllF240m),
-        mpll_clk: Some(MpllClkConfig::_400),
+        mpll_clk: Some(Self::PRESET_MPLL),
         cpu_clk: Some(CpuClkConfig::new(0)),
         mem_clk: Some(MemClkConfig::new(1)), // Max 160 MHz
         sys_clk: Some(SysClkConfig::new(2)), // Max ~320/3 MHz
@@ -77,7 +83,7 @@ impl CpuClock {
     };
     const PRESET_320: ClockConfig = ClockConfig {
         cpu_root_clk: Some(CpuRootClkConfig::Cpll),
-        mpll_clk: Some(MpllClkConfig::_400),
+        mpll_clk: Some(Self::PRESET_MPLL),
         cpu_clk: Some(CpuClkConfig::new(0)),
         mem_clk: Some(MemClkConfig::new(1)), // Max 160 MHz
         sys_clk: Some(SysClkConfig::new(2)), // Max ~320/3 MHz
@@ -272,23 +278,45 @@ pub(crate) fn recalibrate_cpll(clocks: &ClockTree) {
 
 // MPLL_CLK
 
+/// The rate in MHz of the MPLL, which the code-in-PSRAM start-up starts before the clock tree
+/// exists.
+#[cfg(code_in_psram)]
+pub(crate) static STARTED_MPLL_MHZ: AtomicU32 = AtomicU32::new(0);
+
+/// Starts the MPLL at `mpll_mhz` without the clock tree, and records it in `STARTED_MPLL_MHZ`.
+#[cfg(code_in_psram)]
+#[inline(always)]
+pub(crate) fn start_mpll(mpll_mhz: u32) {
+    psram_phy_ldo_init();
+    set_mpll_dividers(mpll_mhz);
+    set_mpll_power(true);
+    set_mpll_frequency(mpll_mhz);
+    STARTED_MPLL_MHZ.store(mpll_mhz, Ordering::Relaxed);
+}
+
+/// Keeps PLL_F25M and PLL_F50M at 25 and 50 MHz from an MPLL at `mpll_mhz`, and makes the MPLL
+/// their source.
+#[inline(always)]
+fn set_mpll_dividers(mpll_mhz: u32) {
+    HP_SYS_CLKRST::regs().ref_25m_ctrl0().modify(|_, w| unsafe {
+        w.clk_div_num()
+            .bits((mpll_mhz / 25).saturating_sub(1) as u8)
+    });
+    HP_SYS_CLKRST::regs().ref_50m_ctrl0().modify(|_, w| unsafe {
+        w.clk_div_num()
+            .bits((mpll_mhz / 50).saturating_sub(1) as u8)
+    });
+    HP_SYS_CLKRST::regs()
+        .ref_500m_ctrl0()
+        .modify(|_, w| w.sel().set_bit());
+}
+
+#[cfg(not(code_in_psram))]
 fn enable_mpll_clk_impl(clocks: &mut ClockTree, en: bool) {
     let mpll_mhz = en.then(|| unwrap!(clocks.mpll_clk).value() / 1_000_000);
     if let Some(mpll_mhz) = mpll_mhz {
         psram_phy_ldo_init();
-
-        // Keep PLL_F25M and PLL_F50M at 25 and 50 MHz.
-        HP_SYS_CLKRST::regs()
-            .ref_25m_ctrl0()
-            .modify(|_, w| unsafe { w.clk_div_num().bits((mpll_mhz / 25 - 1) as u8) });
-        HP_SYS_CLKRST::regs()
-            .ref_50m_ctrl0()
-            .modify(|_, w| unsafe { w.clk_div_num().bits((mpll_mhz / 50 - 1) as u8) });
-
-        // Clock source of 25/50MHz dividers.
-        HP_SYS_CLKRST::regs()
-            .ref_500m_ctrl0()
-            .modify(|_, w| w.sel().set_bit()); // MPLL
+        set_mpll_dividers(mpll_mhz);
     }
 
     set_mpll_power(en);
@@ -296,6 +324,25 @@ fn enable_mpll_clk_impl(clocks: &mut ClockTree, en: bool) {
     if let Some(mpll_mhz) = mpll_mhz {
         set_mpll_frequency(mpll_mhz);
     }
+}
+
+/// PSRAM holds the code and runs from the MPLL that the start-up started, so the MPLL stays on.
+#[cfg(code_in_psram)]
+fn enable_mpll_clk_impl(clocks: &mut ClockTree, en: bool) {
+    if !en {
+        return;
+    }
+    let mhz = STARTED_MPLL_MHZ.load(Ordering::Relaxed);
+    if clocks.mpll_clk != Some(MpllClkConfig::_400) {
+        if clocks.mpll_clk.is_some() {
+            warn!(
+                "MPLL_CLK runs at {} MHz since start-up and cannot change while code runs from PSRAM",
+                mhz
+            );
+        }
+        configure_mpll_clk(clocks, MpllClkConfig::_400);
+    }
+    set_mpll_dividers(mhz);
 }
 
 /// Powers the MPLL up or down.
@@ -332,9 +379,11 @@ pub(crate) fn set_mpll_power(on: bool) {
 ///
 /// MPLL = XTAL * (fb_div + 1) / (ref_div + 1), with ref_div 1.
 ///
-/// Ref: [IDF `clk_ll_mpll_set_config` (esp32s31)](https://github.com/espressif/esp-idf/blob/27506a49bc919926f546e325d5f5334ba23db316/components/esp_hal_clock/esp32s31/include/hal/clk_tree_ll.h#L527-L545)
+/// The start-up calls this function before the code is in PSRAM, and light sleep calls it while the
+/// caches are suspended. The function is therefore inlined, has no panic path, and reaches only
+/// analog I2C accessors in RAM.
 ///
-/// Light sleep calls this function with the caches suspended, so the function must be inlined.
+/// Ref: [IDF `clk_ll_mpll_set_config` (esp32s31)](https://github.com/espressif/esp-idf/blob/27506a49bc919926f546e325d5f5334ba23db316/components/esp_hal_clock/esp32s31/include/hal/clk_tree_ll.h#L527-L545)
 #[inline(always)]
 pub(crate) fn set_mpll_frequency(mpll_mhz: u32) {
     // Analog settings IDF writes before each calibration.
@@ -388,6 +437,7 @@ fn configure_mpll_clk_impl(
 }
 
 /// Programs the PMU external LDO regulators for the MSPI PHY.
+#[cfg_attr(code_in_psram, inline(always))]
 fn psram_phy_ldo_init() {
     // Limit inrush current while the output cap charges; keep ripple
     // suppression (voltage detector) enabled.
@@ -396,7 +446,8 @@ fn psram_phy_ldo_init() {
         .modify(|_, w| w.ext_cur_lim().set_bit());
 
     // Set up for 1800mV
-    let (dref, mul) = ldo_voltage_to_params(1800);
+    const LDO_1800_MV: (u8, u8) = ldo_voltage_to_params(1800);
+    let (dref, mul) = LDO_1800_MV;
     PMU::regs().ext_ldo_ctrl().modify(|_, w| unsafe {
         w.ext_ldo_mul().bits(mul);
         w.ext_ldo_dref().bits(dref);
@@ -419,7 +470,7 @@ fn psram_phy_ldo_init() {
 }
 
 // Returns None if rail voltage is to be used.
-fn ldo_voltage_to_params(voltage_mv: u16) -> (u8, u8) {
+const fn ldo_voltage_to_params(voltage_mv: u16) -> (u8, u8) {
     // to avoid using FPU, enlarge the constants by 1000 as fixed point
     const K_1000: u32 = 1000;
     const VOS_1000: u32 = 0;
@@ -431,13 +482,15 @@ fn ldo_voltage_to_params(voltage_mv: u16) -> (u8, u8) {
     let mut min_voltage_diff = 400_000_000;
     let mut matched_dref = 0;
     let mut matched_mul = 0;
-    for dref_val in 0..16 {
+    let mut dref_val = 0;
+    while dref_val < 16 {
         let vref_20 = if dref_val < 9 {
             10 + dref_val
         } else {
             20 + (dref_val - 9) * 2
         };
-        for mul_val in 0..8 {
+        let mut mul_val = 0;
+        while mul_val < 8 {
             let vout_80000000 = (vref_20 * K_1000 + 20 * VOS_1000) * (4000 + mul_val * C_1000);
             let diff = (voltage_mv as u32 * 80000).abs_diff(vout_80000000);
             if diff < min_voltage_diff {
@@ -445,7 +498,9 @@ fn ldo_voltage_to_params(voltage_mv: u16) -> (u8, u8) {
                 matched_dref = dref_val as u8;
                 matched_mul = mul_val as u8;
             }
+            mul_val += 1;
         }
+        dref_val += 1;
     }
 
     (matched_dref, matched_mul)
