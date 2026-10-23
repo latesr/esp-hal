@@ -233,15 +233,27 @@ options:
 
   - name: psram-frequency
     description: "The PSRAM frequency when `code-in-psram` is on. The start-up then starts PSRAM
-      before `ClockConfig` and `PsramConfig` apply. On the ESP32-S31, 200 MHz runs the MPLL at
-      400 MHz, which limits RGMII Ethernet to 100 Mbit/s, and 250 MHz runs it at 500 MHz.
+      before `ClockConfig` and `PsramConfig` apply, and `PsramConfig::default()` follows the
+      option. On the ESP32-C5, the values are 40 MHz and 80 MHz, and the default is 80 MHz. On
+      the ESP32-S31, the values are 200 MHz and 250 MHz, the default is 200 MHz, and the
+      `CpuClock` presets also follow the option. There, 200 MHz runs the MPLL at 400 MHz, which
+      limits RGMII Ethernet to 100 Mbit/s, and 250 MHz runs it at 500 MHz.
       `ClockConfig::mpll_clk` cannot change the MPLL: `esp_hal::init` keeps the start-up's rate
-      and warns. The `CpuClock` presets and `PsramConfig::default()` follow the option. Without
-      `code-in-psram`, `ClockConfig::mpll_clk` and `PsramConfig` set the frequency. On other chips
-      the option is inactive."
+      and warns.
+      When `code-in-psram` is off, `PsramConfig` sets the frequency, and on the ESP32-S31
+      `ClockConfig::mpll_clk` sets it too. On chips without `code-in-psram`, the option is
+      inactive."
     default:
+      - value: '"80MHz"'
+        if: "esp32c5"
       - value: '"200MHz"'
     constraints:
+      - if: "esp32c5"
+        type:
+          validator: enumeration
+          value:
+            - "40MHz"
+            - "80MHz"
       - if: "esp32s31"
         type:
           validator: enumeration
