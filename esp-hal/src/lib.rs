@@ -176,6 +176,12 @@ fn main() -> ! {
 //! [profile.release.package.esp-hal]
 //! opt-level = 2
 //! ```
+#![cfg_attr(psram_code_in_psram, doc = "")]
+#![cfg_attr(
+    psram_code_in_psram,
+    doc = "With the `code-in-psram` option, every application uses these operations, so esp-hal \
+           must be built at `opt-level` 2 or 3."
+)]
 #![cfg_attr(psram_separate_window, doc = "")]
 #![cfg_attr(
     psram_separate_window,
