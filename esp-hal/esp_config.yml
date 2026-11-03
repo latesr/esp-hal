@@ -222,10 +222,11 @@ options:
   - name: code-in-psram
     description: "Run `.text` and `.rodata` from PSRAM. The start-up starts PSRAM at
       `psram-frequency` and copies both from flash before `esp_hal::init`. Flash operations then
-      keep the caches on and do not park the other core. With flash encryption, the copy in PSRAM
-      is plaintext and can be read from the PSRAM pins. On a chip whose PSRAM has its own address
-      window, such as the ESP32-S31, each crate must build at opt-level 2 or 3, as the
-      [Optimization level](#optimization-level) section states."
+      keep the caches on and do not park the other core. A light sleep during a flash erase or
+      write returns `Refused` on the core that performs the sleep. With flash encryption, the copy
+      in PSRAM is plaintext and can be read from the PSRAM pins. Where PSRAM has its own address
+      window, as on the ESP32-S31, each crate must be built at opt-level 2 or 3. See
+      [Optimization level](#optimization-level)."
     default:
       - value: false
     active: "psram_code_in_psram"
