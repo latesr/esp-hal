@@ -44,6 +44,9 @@
 //!   interrupts and waits in RAM until the operation ends. A core that wakes while an operation
 //!   waits for it joins that park before its sleep call returns. So a sleep or a wait during a
 //!   flash cycle does not get an upper bound.
+//! - With code in PSRAM, a flash operation does not park the other core, and a light sleep during
+//!   it is refused. A phase in which a sleep can meet a flash operation then fails when no sleep
+//!   was refused.
 //! - On a chip with two cores, a random core requests each sleep while the other core works. The
 //!   working core must return from the park, and with CPU retention from the rendezvous, with its
 //!   state intact. A core that makes no progress for [`STALL_REPORTS`] reports fails the phase.
@@ -92,7 +95,7 @@ use esp_hal::{
 };
 use esp_rtos::{CurrentThreadHandle, thread::ThreadSpawner};
 use portable_atomic::{AtomicBool, AtomicU32, Ordering};
-use qa_test::{Progress, ProgressWord, free_flash, report};
+use qa_test::{Progress, ProgressWord, code_in_psram, free_flash, report};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -633,7 +636,12 @@ fn sleep_round(core: usize, lpwr: &mut LowPower<'_>, rng: &mut Rng, retention: b
     }
 
     if result == LightSleep::Ended && length >= LONG_SLEEP {
-        if cfg!(all(cpu_retention = "software", multi_core))
+        if code_in_psram() && core == 1 && flash_ran(flash_gen) && slept < NO_SLEEP {
+            // With code in PSRAM, the PRO CPU performs every light sleep, and a sleep that the APP
+            // CPU requests during a flash operation returns `Ended` without a sleep. The lock
+            // refused it, so the program counts it with the refused sleeps.
+            count(&COUNTS.refused);
+        } else if cfg!(all(cpu_retention = "software", multi_core))
             && (retention || core == 1)
             && slept < NO_SLEEP
         {
@@ -788,6 +796,14 @@ impl Controller {
                 if c.not_slept.load(Ordering::Relaxed) > c.long_slept.load(Ordering::Relaxed) =>
             {
                 Some("more long sleeps returned without a sleep than ended within their bounds")
+            }
+            // On one core, the main loop never requests a sleep during its own flash operation.
+            Caller::Bare | Caller::Thread
+                if code_in_psram()
+                    && (phase.caller == Caller::Thread || CORES == 2)
+                    && !made(&c.refused) =>
+            {
+                Some("no sleep met a flash operation")
             }
             _ => None,
         };

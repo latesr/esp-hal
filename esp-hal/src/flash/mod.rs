@@ -82,6 +82,8 @@ is not relevant, and operations do not return [`Error::OtherCoreRunning`].
 
 use core::marker::PhantomData;
 
+#[cfg(code_in_psram)]
+use portable_atomic::{AtomicBool, Ordering};
 use procmacros::{BuilderLite, ram};
 
 use crate::{Blocking, DriverMode, peripherals::FLASH, soc::is_slice_in_dram};
@@ -794,6 +796,10 @@ impl Flash<'_, Blocking> {
             // No flash page is mapped, so the operation does not invalidate the cache.
             code_in_psram => {
                 let _ = invalidate;
+                let _chip = FlashChipLock::lock();
+                // The lock keeps light sleep out of the operation. The wake lock only saves
+                // esp-rtos's idle hook a refused attempt.
+                let _awake = crate::rtc_cntl::WakeLock::new();
                 Ok(f()?)
             }
             _ => free(|| {
@@ -854,6 +860,64 @@ fn with_caches_suspended<R>(
     }
     drop(cache);
     result
+}
+
+/// The lock on the flash chip, which flash operations and light sleep share.
+///
+/// A light sleep during a flash operation freezes the MSPI in the middle of a flash command, and
+/// with code in PSRAM an operation leaves the other core and the other threads running. An
+/// operation holds the lock for each ROM call, and a light sleep holds it until the sleep ends.
+#[cfg(code_in_psram)]
+pub(crate) struct FlashChipLock;
+
+#[cfg(code_in_psram)]
+static FLASH_CHIP_LOCKED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(code_in_psram)]
+impl FlashChipLock {
+    /// Takes the lock for a light sleep, or returns `None` while a flash operation holds it.
+    ///
+    /// A sleep must refuse, not wait. The thread that sleeps can have preempted the operation, and
+    /// on a two-core chip the request can reach the PRO CPU's IPC handler in the middle of the PRO
+    /// CPU's own operation. A light sleep and a flash operation must not overlap.
+    ///
+    /// See <https://github.com/espressif/esp-idf/blob/383dda6c182/components/esp_hw_support/sleep_modes.c#L1252-L1268>.
+    #[inline(always)]
+    pub(crate) fn try_lock() -> Option<FlashChipGuard> {
+        // `then_some` builds its argument before the test and drops it on failure, and that drop
+        // releases the lock the other side holds.
+        FLASH_CHIP_LOCKED
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+            .then(|| FlashChipGuard)
+    }
+
+    /// Takes the lock for a flash operation, and waits while a light sleep holds it.
+    ///
+    /// A sleep always ends, so the wait does.
+    #[inline(always)]
+    pub(crate) fn lock() -> FlashChipGuard {
+        loop {
+            if let Some(guard) = Self::try_lock() {
+                return guard;
+            }
+            while FLASH_CHIP_LOCKED.load(Ordering::Relaxed) {
+                core::hint::spin_loop();
+            }
+        }
+    }
+}
+
+/// Releases [`FlashChipLock`] on drop.
+#[cfg(code_in_psram)]
+pub(crate) struct FlashChipGuard;
+
+#[cfg(code_in_psram)]
+impl Drop for FlashChipGuard {
+    #[inline(always)]
+    fn drop(&mut self) {
+        FLASH_CHIP_LOCKED.store(false, Ordering::Release);
+    }
 }
 
 /// Stops the other core according to [`MultiCoreStrategy`]. [`Drop`] releases that core.

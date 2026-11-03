@@ -63,6 +63,11 @@ pub enum LightSleep {
     ///
     /// The refusal holds until the state that caused it changes, so a second call refuses too.
     /// Wait for an interrupt instead.
+    #[cfg_attr(
+        psram_code_in_psram,
+        doc = "\n\nWith the `code-in-psram` option, a light sleep during a flash operation returns \
+               this result on the core that performs the sleep."
+    )]
     Refused,
 }
 
@@ -179,6 +184,11 @@ impl<'d> LowPower<'d> {
     /// A wakeup source cannot refuse this sleep. The wake resets the chip, so the call cannot
     /// return a refusal. [`Self::sleep_light`] reports a refusal.
     #[cfg_attr(
+        all(psram_code_in_psram, multi_core),
+        doc = "\n\nWith the `code-in-psram` option, a deep sleep on the other core cuts a flash \
+               operation in progress."
+    )]
+    #[cfg_attr(
         cpu_retention = "software",
         doc = "\n\nDeep sleep shares the entry code of light sleep. See [Optimization \
                level](crate#optimization-level) for the build requirement.\n"
@@ -254,6 +264,17 @@ impl<'d> LowPower<'d> {
     /// neither case. For the caller, a rejected sleep and a very short sleep have the same
     /// result.
     #[cfg_attr(
+        psram_code_in_psram,
+        doc = "\n\nWith the `code-in-psram` option, a light sleep during a flash operation returns \
+               [`LightSleep::Refused`] on the core that performs the sleep."
+    )]
+    #[cfg_attr(
+        all(psram_code_in_psram, multi_core),
+        doc = "On a two-core chip, the PRO CPU performs every light sleep. A sleep that the APP \
+               CPU requests during a flash operation returns [`LightSleep::Ended`] without a \
+               sleep."
+    )]
+    #[cfg_attr(
         cpu_retention = "software",
         doc = "\n\nLight sleep suspends the caches. See [Optimization \
                level](crate#optimization-level) for the build requirement."
@@ -324,6 +345,18 @@ impl<'d> LowPower<'d> {
         kind: SleepKind,
         allow_reject: bool,
     ) -> bool {
+        // The guard keeps `FlashChipLock` until the sleep ends, so no flash operation starts during
+        // the sleep. A deep sleep, like a reset, cuts an operation in progress.
+        #[cfg(code_in_psram)]
+        let _flash_chip = if kind == SleepKind::Light {
+            match crate::flash::FlashChipLock::try_lock() {
+                Some(guard) => Some(guard),
+                None => return true,
+            }
+        } else {
+            None
+        };
+
         let rtc = Rtc::new(unsafe { crate::peripherals::RTC_TIMER::steal() });
 
         let mut config = config;
