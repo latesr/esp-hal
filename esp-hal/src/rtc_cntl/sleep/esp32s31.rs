@@ -862,7 +862,7 @@ fn disable_bbpll() {
 /// return here. The retention code calls [`pmu_sleep_finish`] instead.
 ///
 /// See <https://github.com/espressif/esp-idf/blob/383dda6c182/components/esp_hw_support/port/esp32s31/pmu_sleep.c#L355-L398>.
-#[crate::ram(unstable(cache_suspend_safe))]
+#[crate::ram(unstable(checked))]
 pub(crate) fn pmu_sleep_start() -> bool {
     let psram = !psram_range().is_empty();
     if psram {
@@ -891,7 +891,7 @@ pub(crate) fn pmu_sleep_start() -> bool {
 /// cache accesses PSRAM.
 ///
 /// See <https://github.com/espressif/esp-idf/blob/383dda6c182/components/esp_hw_support/port/esp32s31/pmu_sleep.c#L409-L465>.
-#[crate::ram(unstable(cache_suspend_safe))]
+#[crate::ram(unstable(checked))]
 pub(crate) fn pmu_sleep_finish() {
     wait_for_efuse_idle();
 
