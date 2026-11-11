@@ -3,6 +3,10 @@
 //% CHIP_FILTER(llff, tlsf): psram_driver_supported
 //% ENV(llff): ESP_ALLOC_CONFIG_HEAP_ALGORITHM=LLFF
 //% ENV(tlsf): ESP_ALLOC_CONFIG_HEAP_ALGORITHM=TLSF
+// This configuration tests the heap after code in PSRAM, without a PSRAM static, on a chip where
+// code and PSRAM share the flash MMU window.
+//% CHIP_FILTER(code_in_psram): psram_code_in_psram && !psram_separate_window
+//% ENV(code_in_psram): ESP_HAL_CONFIG_CODE_IN_PSRAM=true
 // The default 64KB leaves nothing to reclaim, see the dcache_reclaimed tests below.
 //% ENV-IF(esp32s3): ESP_HAL_CONFIG_DATA_CACHE_SIZE=32KB
 //% FEATURES: unstable esp-alloc/nightly
