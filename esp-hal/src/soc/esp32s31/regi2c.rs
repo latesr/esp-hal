@@ -313,7 +313,7 @@ pub(crate) fn regi2c_write(block: u8, _host_id: u8, reg_add: u8, data: u8) {
     write(block_mask(block), block, reg_add, data)
 }
 
-#[crate::ram(unstable(cache_suspend_safe))]
+#[crate::ram(unstable(checked))]
 fn read(bit_mask: u32, block: u8, reg_add: u8) -> u8 {
     let master = regi2c_enable_block(bit_mask);
     let ctrl = i2c_ctrl_reg(master);
@@ -333,7 +333,7 @@ fn read(bit_mask: u32, block: u8, reg_add: u8) -> u8 {
     ((val >> REGI2C_RTC_DATA_SHIFT) & REGI2C_RTC_DATA_MASK) as u8
 }
 
-#[crate::ram(unstable(cache_suspend_safe))]
+#[crate::ram(unstable(checked))]
 fn write(bit_mask: u32, block: u8, reg_add: u8, data: u8) {
     let master = regi2c_enable_block(bit_mask);
     let ctrl = i2c_ctrl_reg(master);
