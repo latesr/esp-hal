@@ -86,7 +86,7 @@ fn writeback_data_cache() {
 
 /// Requests the sleep and returns whether the hardware rejected the request.
 ///
-/// The software retention path calls this through a function pointer after the critical frame is
+/// The software retention path calls this with the caches suspended, after the critical frame is
 /// saved.
 #[cfg_attr(cpu_retention = "software", procmacros::ram(unstable(checked)))]
 #[cfg_attr(not(cpu_retention = "software"), inline(always))]

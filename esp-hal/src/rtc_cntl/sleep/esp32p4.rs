@@ -1110,3 +1110,13 @@ impl SavedState {
         }
     }
 }
+
+/// Requests a light sleep.
+#[inline(always)]
+pub(crate) fn pmu_sleep_start(_saved: &SavedState) -> bool {
+    request_sleep()
+}
+
+/// Runs the wake steps after a CPU power-down. The ESP32-P4 has no wake steps yet.
+#[inline(always)]
+pub(crate) fn pmu_sleep_finish(_saved: &SavedState) {}
