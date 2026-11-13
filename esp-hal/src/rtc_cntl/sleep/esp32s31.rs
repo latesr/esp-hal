@@ -693,10 +693,6 @@ impl RtcSleepConfig {
             let deep = self.deep;
             DropGuard::new((), move |_| {
                 ClockTree::with(|clocks| {
-                    // Light sleep powers XTAL_CLK down, so the MPLL that clocks PSRAM loses its
-                    // calibration. The MPLL must be calibrated again before the next PSRAM
-                    // access.
-                    clocks::recalibrate_mpll(clocks);
                     // Light sleep powers XTAL_CLK down, so the CPLL loses its calibration. The
                     // CPLL must be calibrated again before the CPU or the flash controller runs
                     // from it.

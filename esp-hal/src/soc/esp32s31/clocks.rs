@@ -379,13 +379,6 @@ pub(crate) fn requested_mpll_mhz(clocks: &ClockTree) -> Option<u32> {
     (clocks.mpll_clk_refcount > 0).then(|| unwrap!(clocks.mpll_clk).value() / 1_000_000)
 }
 
-/// Calibrates the MPLL again at the rate the clock tree holds, if a clock uses it.
-pub(crate) fn recalibrate_mpll(clocks: &ClockTree) {
-    if let Some(mpll_mhz) = requested_mpll_mhz(clocks) {
-        set_mpll_frequency(mpll_mhz);
-    }
-}
-
 fn configure_mpll_clk_impl(
     _clocks: &mut ClockTree,
     _old_config: Option<MpllClkConfig>,
