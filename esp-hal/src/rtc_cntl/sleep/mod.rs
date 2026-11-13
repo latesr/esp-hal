@@ -511,7 +511,7 @@ impl<'d> LowPower<'d> {
                 cpu_retention = "software" => {
                     // The software chips save the CPU inside the request, so the request belongs to
                     // them. ESP-IDF wraps `pmu_sleep_start` the same way (`sleep_modes.c:963-964`).
-                    cpu_retention::enter_sleep_with_retention(&config, retention_buffer)
+                    cpu_retention::enter_sleep_with_retention(&config, &saved, retention_buffer)
                 }
                 _ => config.enter_sleep(),
             };

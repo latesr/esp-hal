@@ -13,11 +13,13 @@ impl RegI2cMaster {
     }
 
     #[allow(unused)]
+    #[inline(always)]
     pub fn write(&self, reg: u8, data: u8) {
         regi2c_write(self.master, self.host_id, reg, data);
     }
 
     #[allow(unused)]
+    #[inline(always)]
     pub fn read(&self, reg: u8) -> u8 {
         regi2c_read(self.master, self.host_id, reg)
     }
@@ -36,11 +38,13 @@ impl RegI2cRegister {
     }
 
     #[allow(unused)]
+    #[inline(always)]
     pub fn write_reg(&self, data: u8) {
         self.master.write(self.reg_add, data);
     }
 
     #[allow(unused)]
+    #[inline(always)]
     pub fn read(&self) -> u8 {
         self.master.read(self.reg_add)
     }
@@ -61,6 +65,7 @@ impl RawRegI2cField {
         Self { register, msb, lsb }
     }
 
+    #[inline(always)]
     const fn mask(&self) -> u8 {
         const fn lower_n_bits(bits: u8) -> u8 {
             !((u32::MAX << bits) as u8)
@@ -70,16 +75,38 @@ impl RawRegI2cField {
     }
 
     #[allow(unused)]
+    #[inline(always)]
     pub fn read(&self) -> u8 {
         (self.register.read() >> self.lsb) & self.mask()
     }
 
     #[allow(unused)]
+    #[inline(always)]
     pub fn write_field(&self, data: u8) {
+        self.write_field_with(data, regi2c_read, regi2c_write);
+    }
+
+    /// Writes the field through `read` and `write`, which take the master, its host ID and the
+    /// register address, like `regi2c_read` and `regi2c_write`.
+    ///
+    /// Code that runs with the caches suspended passes accessors in RAM.
+    #[allow(unused)]
+    #[inline(always)]
+    pub fn write_field_with(
+        &self,
+        data: u8,
+        read: impl Fn(u8, u8, u8) -> u8,
+        write: impl Fn(u8, u8, u8, u8),
+    ) {
+        let RegI2cRegister { master, reg_add } = self.register;
         let mask = self.mask() << self.lsb;
-        let bits = self.register.read();
-        self.register
-            .write_reg((bits & !mask) | ((data << self.lsb) & mask));
+        let bits = read(master.master, master.host_id, reg_add);
+        write(
+            master.master,
+            master.host_id,
+            reg_add,
+            (bits & !mask) | ((data << self.lsb) & mask),
+        );
     }
 }
 
