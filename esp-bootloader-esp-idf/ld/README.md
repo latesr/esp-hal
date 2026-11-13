@@ -62,12 +62,13 @@ A bootloader support crate provides `linkall.x`, which must:
   `_rwtext_len`, `_data_start`, `_data_end`, `_sidata`, `_bss_start`, `_bss_end`, `_noinit_end`,
   `_dram_data_start` (RISC-V), `_dram2_uninit_bss_start` / `_end`, `_rtc_fast_bss_*` /
   `_rtc_fast_persistent_*`, `_rtc_slow_bss_*` / `_rtc_slow_persistent_*` (chips with RTC slow
-  memory), `_uncached_*` (ESP32-P4) and `_psram_code_end`, `_psram_bss_start`, and
-  `_psram_bss_end` (ESP32-S31).
+  memory), `_uncached_*` (ESP32-P4), and `_psram_code_end`, `_psram_bss_start`, and
+  `_psram_bss_end` (ESP32-C5 and ESP32-S31).
 - Place the input sections esp-hal and the runtime crates emit, including `.trap*`, `.rwtext*`,
-  `.rtc_fast.*` / `.rtc_slow.*`, `.dram2_uninit*`, `.uncached.*`, `.bss.psram*` (ESP32-S31) and
-  `.espressif.metadata`. `.bss.psram*` goes in the PSRAM window above the code, before `.bss`
-  takes `.bss.*`, and must be empty unless `ESP_HAL_CODE_IN_PSRAM` is 1.
+  `.rtc_fast.*` / `.rtc_slow.*`, `.dram2_uninit*`, `.uncached.*`, `.bss.psram*` (ESP32-C5 and
+  ESP32-S31), and `.espressif.metadata`. `.bss.psram*` goes after the code, in the window that
+  the code runs from, before `.bss` takes `.bss.*`. It must be empty unless
+  `ESP_HAL_CODE_IN_PSRAM` is 1.
 - Respect the memory protection esp-hal sets up from these symbols (below).
 
 ### Memory protection
