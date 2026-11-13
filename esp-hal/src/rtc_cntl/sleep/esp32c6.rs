@@ -856,3 +856,13 @@ impl SavedState {
         });
     }
 }
+
+/// Requests a light sleep. The ESP32-C6 needs no steps around the request.
+#[inline(always)]
+pub(crate) fn pmu_sleep_start(_saved: &SavedState) -> bool {
+    request_sleep()
+}
+
+/// Runs the wake steps after a CPU power-down. The ESP32-C6 has no wake steps.
+#[inline(always)]
+pub(crate) fn pmu_sleep_finish(_saved: &SavedState) {}
