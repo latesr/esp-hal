@@ -19,6 +19,9 @@ pub struct PsramConfig {
     pub size: PsramSize,
 
     /// PSRAM timing parameters. Default: 200 MHz. 250 MHz needs the MPLL at 500 MHz.
+    ///
+    /// With `code-in-psram`, PSRAM runs at 200 MHz from start-up, and this field is ignored. For
+    /// 250 MHz, set `ClockConfig::mpll_clk` to 500 MHz in the config of `esp_hal::init`.
     pub timing: PsramTimingParams,
     // TODO: ECC enable.
     // The MSPI0 controller has a ECC engine.
@@ -194,7 +197,8 @@ pub(crate) use start::*;
 /// Code in PSRAM: the ESP32-S31's parts of the start-up in [`super::code_in_psram`].
 ///
 /// Neither `.text` nor `.rodata` is in PSRAM while the start-up runs, so every function here
-/// except `request_clock` must be inlined into `riscv_preinit`.
+/// except `request_clock` and `retime_to_500mhz` must be inlined into `riscv_preinit`.
+/// `esp_hal::init` calls these two functions.
 #[cfg(code_in_psram)]
 mod start {
     use super::*;
@@ -221,7 +225,8 @@ mod start {
     const ICACHES: u32 = 0b11;
     const DCACHE: u32 = 1 << 4;
 
-    /// The start-up's MPLL rate, for PSRAM at 200 MHz.
+    /// The start-up's MPLL rate, for PSRAM at 200 MHz. `ClockConfig::mpll_clk` can move it to
+    /// 500 MHz in `esp_hal::init`, see [`retime_to_500mhz`].
     const MPLL_MHZ: u32 = 400;
 
     unsafe extern "C" {
@@ -299,6 +304,51 @@ mod start {
                 w.core1_global_rst_en().set_bit()
             });
         }
+    }
+
+    // `retime_to_500mhz` sets the bus clock without a check, so 250 MHz must divide 500 MHz.
+    const _: () = core::assert!(500 % PsramTimingParams::MHZ_250.clock == 0);
+
+    /// Moves the running PSRAM from 200 MHz to 250 MHz, and the MPLL from 400 MHz to 500 MHz.
+    ///
+    /// The code runs from PSRAM, so the function runs from RAM with the caches suspended. Core 1 is
+    /// still in reset and nothing uses PLL_F25M or PLL_F50M yet, so it masks only this core's
+    /// interrupts. The latencies change first, at 200 MHz, where the longer latencies also work.
+    /// The DLL gets no settle time after the clock returns, as in ESP-IDF's light-sleep wake.
+    /// See <https://github.com/espressif/esp-idf/blob/383dda6c182/components/esp_hw_support/port/esp32s31/pmu_sleep.c#L417-L428>.
+    #[crate::ram(unstable(checked))]
+    pub(crate) fn retime_to_500mhz() {
+        let old = PsramTimingParams::MHZ_200;
+        let new = PsramTimingParams::MHZ_250;
+        let token =
+            unsafe { esp_sync::raw::RawLock::enter(&esp_sync::raw::SingleCoreInterruptLock) };
+        {
+            let _caches = crate::soc::cache::CacheGuard::suspend();
+            // Bits 26–31 are the six FIFO-empty bits.
+            const ALL_TRANSACTION_DONE: u32 = 0xfc00_0000;
+            while MEMSPI2::regs().smem_axi_addr_ctrl().read().bits() != ALL_TRANSACTION_DONE {}
+
+            oct_hex::retime_mr_registers(&old, &new);
+            oct_hex::configure_psram_mspi(&new, false);
+
+            HP_SYS_CLKRST::regs().psram_ctrl0().modify(|_, w| unsafe {
+                w.clk_src_sel().bits(0);
+                w.core_clk_en().clear_bit();
+                w.pll_clk_en().clear_bit()
+            });
+            crate::soc::clocks::set_mpll_dividers(500);
+            crate::soc::clocks::set_mpll_power(false);
+            crate::soc::clocks::set_mpll_power(true);
+            crate::soc::clocks::set_mpll_frequency(500);
+            // Cannot fail: the assertion above the function checks the divider.
+            let _ = oct_hex::set_bus_clock_from(500, new.clock);
+            HP_SYS_CLKRST::regs().psram_ctrl0().modify(|_, w| unsafe {
+                w.clk_src_sel().bits(1);
+                w.pll_clk_en().set_bit();
+                w.core_clk_en().set_bit()
+            });
+        }
+        unsafe { esp_sync::raw::RawLock::exit(&esp_sync::raw::SingleCoreInterruptLock, token) };
     }
 
     /// Starts the MPLL and PSRAM, maps PSRAM page i at window page i, and returns its size.

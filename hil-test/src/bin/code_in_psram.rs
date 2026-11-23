@@ -70,6 +70,22 @@ fn booted_image(
     (app, app_len, offset)
 }
 
+/// Returns the flash offset of a random 64 KiB block after the image in the booted partition. A
+/// random block spreads the wear of the tests over the partition.
+#[cfg(feature = "esp32s31")]
+fn scratch_block(flash: &mut esp_hal::flash::Flash<'_, esp_hal::Blocking>) -> u32 {
+    const BLOCK: u32 = 0x1_0000;
+    // The checksum and the hash after the last segment fit in the next block.
+    let (app, app_len, end) = booted_image(flash, |_, _, _, _| {});
+    let first = (end + BLOCK).div_ceil(BLOCK);
+    let last = (app + app_len) / BLOCK;
+    assert!(
+        first < last,
+        "no free 64 KiB block after the image in the booted partition"
+    );
+    (first + esp_hal::rng::Rng::new().random() % (last - first)) * BLOCK
+}
+
 /// The number of `u32` words in 256 KiB, the size of the PSRAM data that the tests write and read
 /// back. It is four times the largest data cache of these chips, 64 KiB on the ESP32-S31, so most
 /// of it reaches PSRAM, and most of the read-back comes from PSRAM, not from the cache.
@@ -244,14 +260,57 @@ mod tests {
         (u32::from(fb_div) + 1) * 40_000_000 / 2
     }
 
-    // The start-up's MPLL rate stays when the configuration asks for 500 MHz, and `init` warns. The
-    // clock tree then holds the start-up's rate.
+    // The start-up runs PSRAM at 200 MHz. A configured 500 MHz MPLL moves PSRAM to 250 MHz in
+    // `init`, while the code runs from PSRAM. The code, the heap, and a flash erase, write, and
+    // read must work at the new rate.
     #[cfg(feature = "esp32s31")]
     #[test]
     fn test_mpll_rate_500mhz() {
         let mut clocks = ClockConfig::from(esp_hal::clock::CpuClock::default());
         clocks.mpll_clk = Some(MpllClkConfig::_500);
-        let _peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(clocks));
+        let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(clocks));
+
+        assert_eq!(
+            ClockTree::with(|clocks| clocks.mpll_clk()),
+            Some(MpllClkConfig::_500)
+        );
+        assert_eq!(mpll_clk_frequency(), 500_000_000);
+        assert_eq!(mpll_in_hardware(), 500_000_000);
+        let psram = Psram::new(peripherals.PSRAM, PsramConfig::default());
+        let (start, _) = psram.raw_parts();
+        let heap = unsafe { core::slice::from_raw_parts_mut(start as *mut u32, UNCACHED_WORDS) };
+        let seed = fresh_seed();
+        fill_pattern(heap, seed);
+        assert_pattern(heap, seed, "the heap at 250 MHz");
+        assert_eq!(in_text(), 0x5053_524D);
+
+        let mut flash = Flash::new(peripherals.FLASH, Config::default()).unwrap();
+        let sector = scratch_block(&mut flash);
+        let mut written = [0u32; 1024];
+        fill_pattern(&mut written, !seed);
+        // SAFETY: the sector is the first of a block in the booted partition, after the image.
+        unsafe {
+            flash.erase(sector, sector + Flash::SECTOR_SIZE).unwrap();
+            flash.write(sector, &written).unwrap();
+        }
+        let mut read_back = [0u32; 1024];
+        flash.read(sector, &mut read_back).unwrap();
+
+        assert_pattern(&read_back, !seed, "the flash sector at 250 MHz");
+        assert_pattern(heap, seed, "the heap after the flash operations");
+        assert_eq!(in_text(), 0x5053_524D);
+    }
+
+    // A change of the MPLL rate after `init` leaves the MPLL, and the clock tree's rate, as they
+    // are.
+    #[cfg(feature = "esp32s31")]
+    #[test]
+    fn test_mpll_change_after_init() {
+        let _peripherals = esp_hal::init(esp_hal::Config::default());
+
+        ClockTree::with(|clocks| {
+            esp_hal::clock::ll::configure_mpll_clk(clocks, MpllClkConfig::_500)
+        });
 
         assert_eq!(
             ClockTree::with(|clocks| clocks.mpll_clk()),

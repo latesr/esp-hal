@@ -297,7 +297,7 @@ pub(crate) fn start_mpll(mpll_mhz: u32) {
 /// Keeps PLL_F25M and PLL_F50M at 25 and 50 MHz from an MPLL at `mpll_mhz`, and makes the MPLL
 /// their source.
 #[inline(always)]
-fn set_mpll_dividers(mpll_mhz: u32) {
+pub(crate) fn set_mpll_dividers(mpll_mhz: u32) {
     HP_SYS_CLKRST::regs().ref_25m_ctrl0().modify(|_, w| unsafe {
         w.clk_div_num()
             .bits((mpll_mhz / 25).saturating_sub(1) as u8)
@@ -332,15 +332,15 @@ fn enable_mpll_clk_impl(clocks: &mut ClockTree, en: bool) {
     if !en {
         return;
     }
-    let mhz = STARTED_MPLL_MHZ.load(Ordering::Relaxed);
-    if clocks.mpll_clk != Some(MpllClkConfig::_400) {
-        if clocks.mpll_clk.is_some() {
-            warn!(
-                "MPLL_CLK runs at {} MHz since start-up and cannot change while code runs from PSRAM",
-                mhz
-            );
+    let mut mhz = STARTED_MPLL_MHZ.load(Ordering::Relaxed);
+    match clocks.mpll_clk {
+        Some(MpllClkConfig::_500) if mhz == 400 => {
+            crate::psram::implem::retime_to_500mhz();
+            mhz = 500;
+            STARTED_MPLL_MHZ.store(mhz, Ordering::Relaxed);
         }
-        configure_mpll_clk(clocks, MpllClkConfig::_400);
+        None => configure_mpll_clk(clocks, MpllClkConfig::_400),
+        _ => {}
     }
     set_mpll_dividers(mhz);
 }
@@ -429,11 +429,26 @@ pub(crate) fn requested_mpll_mhz(clocks: &ClockTree) -> Option<u32> {
 }
 
 fn configure_mpll_clk_impl(
-    _clocks: &mut ClockTree,
-    _old_config: Option<MpllClkConfig>,
-    _new_config: MpllClkConfig,
+    clocks: &mut ClockTree,
+    old_config: Option<MpllClkConfig>,
+    new_config: MpllClkConfig,
 ) {
     // Configuration applied in enable_mpll_clk_impl
+    //
+    // With code in PSRAM, the MPLL's rate changes only in `esp_hal::init`. A later change keeps the
+    // running rate in the clock tree.
+    if cfg!(code_in_psram)
+        && clocks.mpll_clk_refcount > 0
+        && let Some(old) = old_config
+        && old != new_config
+    {
+        warn!(
+            "MPLL_CLK runs at {} MHz. With code in PSRAM, set it in the ClockConfig of esp_hal::init",
+            old.value() / 1_000_000
+        );
+        clocks.mpll_clk = old_config;
+        refresh_mpll_clk_downstream(clocks);
+    }
 }
 
 /// Programs the PMU external LDO regulators for the MSPI PHY.

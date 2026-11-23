@@ -417,6 +417,26 @@ fn psram_mr_write(mr_addr: u32, low: u8, high: u8) {
     mspi1_reg_write16(mr_addr, pair)
 }
 
+/// Moves a running chip from `old`'s read and write latencies to `new`'s. Both mode registers are
+/// read first, with `old`'s register dummy, because a new read latency changes the dummy that a
+/// register read needs.
+#[cfg(all(esp32s31, code_in_psram))]
+#[inline(always)]
+pub(super) fn retime_mr_registers(old: &PsramTimingParams, new: &PsramTimingParams) {
+    let (mr0, mr1) = psram_mr_read(old, MR_ADDR_MR0_MR1);
+    let (mr4, mr5) = psram_mr_read(old, MR_ADDR_MR4_MR5);
+    psram_mr_write(
+        MR_ADDR_MR4_MR5,
+        (mr4 & !(0x7 << 5)) | ((new.mr4_wl & 0x7) << 5),
+        mr5,
+    );
+    psram_mr_write(
+        MR_ADDR_MR0_MR1,
+        (mr0 & !(0x7 << 2)) | ((new.mr0_rl & 0x7) << 2),
+        mr1,
+    );
+}
+
 /// Initializes AP OCT PSRAM mode registers via PSRAM_MSPI1 OPI DTR
 /// referenced IDF `oct_psram_mode_reg_t`).
 /// MR0: drive_str[1:0], read_latency[4:2], lt[5]
