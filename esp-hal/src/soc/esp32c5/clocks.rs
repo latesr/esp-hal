@@ -112,12 +112,8 @@ impl ClockConfig {
 
     pub(crate) fn configure(mut self, clocks: &mut ClockTree) {
         // FIXME: we ignore user XTAL configuration, but we shouldn't offer it in the first place.
-        // PCR_CLK_XTAL_FREQ updates its value based on EFUSE_XTAL_48M_SEL.
-        self.xtal_clk = if PCR::regs().sysclk_conf().read().clk_xtal_freq().bits() == 40 {
-            Some(XtalClkConfig::_40)
-        } else {
-            Some(XtalClkConfig::_48)
-        };
+        // The ESP32-C5 has a 48 MHz crystal only.
+        self.xtal_clk = Some(XtalClkConfig::_48);
 
         with_single_bus_clock_update(|| self.apply(clocks));
     }
@@ -145,7 +141,9 @@ pub(crate) fn reconfigure_pll(clocks: &mut ClockTree) {
     }
 }
 
-fn enable_pll_clk_impl(clocks: &mut ClockTree, en: bool) {
+// PSRAM's clock comes from the BBPLL, so with code in PSRAM the calibration must run from RAM.
+#[cfg_attr(code_in_psram, crate::ram(unstable(checked)))]
+fn enable_pll_clk_impl(_clocks: &mut ClockTree, en: bool) {
     if en {
         PMU::regs().imm_hp_ck_power().write(|w| {
             w.tie_high_xpd_bb_i2c().set_bit();
@@ -178,21 +176,10 @@ fn enable_pll_clk_impl(clocks: &mut ClockTree, en: bool) {
         w.bbpll_stop_force_low().set_bit()
     });
 
-    let div7_0: u8;
-    let dr1: u8;
-    let dr3: u8;
-    match unwrap!(clocks.xtal_clk()) {
-        XtalClkConfig::_40 => {
-            div7_0 = 12;
-            dr1 = 0;
-            dr3 = 0;
-        }
-        XtalClkConfig::_48 => {
-            div7_0 = 10;
-            dr1 = 1;
-            dr3 = 1;
-        }
-    }
+    // The values for the 48 MHz crystal.
+    const DIV7_0: u8 = 10;
+    const DR1: u8 = 1;
+    const DR3: u8 = 1;
 
     const DIV_REF: u8 = 1; // Do not divide reference clock
     const DCHGP: u8 = 5;
@@ -207,9 +194,9 @@ fn enable_pll_clk_impl(clocks: &mut ClockTree, en: bool) {
     const I2C_BBPLL_LREF: u8 = (DCHGP << I2C_BBPLL_OC_DCHGP_LSB) | DIV_REF;
 
     regi2c::I2C_BBPLL_OC_REF.write_reg(I2C_BBPLL_LREF);
-    regi2c::I2C_BBPLL_OC_DIV_REG.write_reg(div7_0);
-    regi2c::I2C_BBPLL_OC_DR1.write_field(dr1);
-    regi2c::I2C_BBPLL_OC_DR3.write_field(dr3);
+    regi2c::I2C_BBPLL_OC_DIV_REG.write_reg(DIV7_0);
+    regi2c::I2C_BBPLL_OC_DR1.write_field(DR1);
+    regi2c::I2C_BBPLL_OC_DR3.write_field(DR3);
     regi2c::I2C_BBPLL_OC_DLREF_SEL.write_field(LREF);
     regi2c::I2C_BBPLL_OC_DHREF_SEL.write_field(HREF);
     regi2c::I2C_BBPLL_OC_VCO_DBIAS.write_field(DBIAS);
@@ -341,6 +328,9 @@ fn enable_hp_root_clk_impl(_clocks: &mut ClockTree, _en: bool) {
     // Nothing to do here.
 }
 
+// With code in PSRAM, a fetch from PSRAM during the switch of the HP root clock to XTAL_CLK does
+// not complete, so the switch must run from RAM.
+#[cfg_attr(code_in_psram, crate::ram(unstable(checked)))]
 fn configure_hp_root_clk_impl(
     _clocks: &mut ClockTree,
     _old_config: Option<HpRootClkConfig>,
