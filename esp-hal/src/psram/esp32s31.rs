@@ -251,6 +251,12 @@ mod start {
             .write(|w| unsafe { w.bits(content) });
     }
 
+    /// Returns `false`, because the flash MMU of the ESP32-S31 cannot map PSRAM.
+    #[inline(always)]
+    pub(crate) fn flash_entry_maps_psram(_content: u32) -> bool {
+        false
+    }
+
     #[inline(always)]
     pub(crate) fn flash_page_shift() -> u32 {
         // Code 0 is 256 KiB, and each code above halves it.

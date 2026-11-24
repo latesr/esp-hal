@@ -12,7 +12,7 @@
   . = ALIGN(4);
 } > RWTEXT
 
-#IF ESP_HAL_CONFIG_CODE_IN_PSRAM
+#IF psram_separate_window && ESP_HAL_CONFIG_CODE_IN_PSRAM
 /* The start-up that copies the code into PSRAM. See `esp_hal_checks.x`. */
 .boot.code_in_psram : ALIGN(4)
 {

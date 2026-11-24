@@ -137,6 +137,22 @@ pub(crate) fn psram_init(
     chip_id
 }
 
+/// Moves flash and PSRAM to the clocks and the timing tuning of `config`, through the low-speed
+/// mode, which clears the tuning that the new frequency may not use.
+///
+/// Nothing may fetch from flash or PSRAM until the function returns.
+#[cfg(code_in_psram)]
+#[ram(unstable(checked))]
+pub(crate) fn set_clocks(
+    config: &PsramConfig,
+    low_speed_clock_reg: u32,
+    flash_clock_reg: u32,
+    psram_clock_reg: u32,
+) {
+    mspi_timing_enter_low_speed_mode(low_speed_clock_reg);
+    mspi_timing_enter_high_speed_mode(config, flash_clock_reg, psram_clock_reg);
+}
+
 unsafe extern "C" {
     fn esp_rom_gpio_connect_out_signal(gpio_num: u8, signal_idx: u8, out_inv: bool, oen_inv: bool);
 

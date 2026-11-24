@@ -631,6 +631,9 @@ macro_rules! property {
     ("psram.supports_code_in_psram") => {
         true
     };
+    ("psram.separate_window") => {
+        true
+    };
     ("psram.has_timing_tuning") => {
         true
     };

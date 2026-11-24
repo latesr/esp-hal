@@ -27,9 +27,10 @@
 #![no_std]
 #![no_main]
 
+#[cfg(multi_core)]
+use core::ptr::addr_of_mut;
 use core::{
     cell::{RefCell, UnsafeCell},
-    ptr::addr_of_mut,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
@@ -71,7 +72,9 @@ enum Figure {
     InterruptSameCore,
     ThreadSameCore,
     InterruptOtherCore,
+    #[cfg(multi_core)]
     ThreadOtherCore,
+    #[cfg(multi_core)]
     BareLoopOtherCore,
 }
 

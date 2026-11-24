@@ -3,7 +3,7 @@
 *libcompiler_builtins*:*(.literal .text .literal.* .text.*)
 #ENDIF
 
-#IF ESP_HAL_CONFIG_CODE_IN_PSRAM
+#IF psram_separate_window && ESP_HAL_CONFIG_CODE_IN_PSRAM
 /* The start-up from `_start` runs before the code is in PSRAM. */
 KEEP(*(.init));
 KEEP(*(.init.rust));

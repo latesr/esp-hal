@@ -665,11 +665,13 @@ pub mod __macro_implementation {
     pub const fn assert_is_uninit<T: super::Uninit>() {}
 
     // `.bss.psram` needs the code-in-PSRAM start-up, which maps PSRAM before `main` and zeroes the
-    // section.
+    // section. The section has a fixed address only where PSRAM has its own address window.
     #[instability::unstable]
     pub const fn assert_psram_available() {
-        if !cfg!(code_in_psram) {
-            core::panic!("`psram` needs the `code-in-psram` option");
+        if !cfg!(all(code_in_psram, psram_separate_window)) {
+            core::panic!(
+                "`psram` needs the `code-in-psram` option, on a chip whose PSRAM has its own address window"
+            );
         }
     }
 

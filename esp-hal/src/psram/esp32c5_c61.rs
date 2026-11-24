@@ -1,5 +1,3 @@
-use core::ops::Range;
-
 use super::{EXTMEM_ORIGIN, PsramSize};
 use crate::{
     peripherals::{CACHE, SPI0, SPI1},
@@ -193,6 +191,12 @@ pub use tuning::MspiTimingTuningParam;
 /// interrupt handler in flash must not run in that time, so `Psram::new` must be called before any
 /// interrupt is enabled. See [Optimization level](crate#optimization-level) for the build
 /// requirement.
+#[cfg_attr(
+    psram_supports_code_in_psram,
+    doc = "\nWith `code-in-psram`, the start-up runs flash and PSRAM at 40 MHz. `Psram::new` then sets \
+           the frequencies and the timing tuning of the config, with interrupts disabled, and \
+           ignores the size."
+)]
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PsramConfig {
@@ -215,34 +219,7 @@ pub struct PsramConfig {
 /// Initializes PSRAM to be used for data.
 #[procmacros::ram]
 pub(crate) fn init_psram(config: &mut PsramConfig) -> bool {
-    // The register setters keep only the bits of each field, so a value out of range must fail
-    // here, before the MSPI timing changes. The start-up writes the values only when the PSRAM
-    // frequency needs timing tuning.
-    #[cfg(psram_has_timing_tuning)]
-    if config.ram_frequency.need_timing_tuning() {
-        for param in [config.flash_tuning, config.ram_tuning] {
-            assert!(param.spi_din_mode <= 7);
-            assert!(param.spi_din_num <= 3);
-        }
-    }
-
-    // The flash and PSRAM frequency while the start-up changes the timing.
-    const LOW_SPEED_MHZ: u32 = 20;
-
-    // The division and its assertion have panic paths in flash, so the clock register values are
-    // calculated before the start-up changes the MSPI clocks.
-    let low_speed = clock_reg(
-        LOW_SPEED_MHZ,
-        MspiTimingSpeedMode::MspiTimingSpeedModeLowPerf,
-    );
-    let flash = clock_reg(
-        config.flash_frequency.mhz(),
-        MspiTimingSpeedMode::MspiTimingSpeedModeNormalPerf,
-    );
-    let psram = clock_reg(
-        config.ram_frequency.mhz(),
-        MspiTimingSpeedMode::MspiTimingSpeedModeNormalPerf,
-    );
+    let (low_speed, flash, psram) = clock_regs(config);
     match quad::psram_init(config, low_speed, flash, psram) {
         quad::ChipId::NotRead => {}
         quad::ChipId::Unknown(id) => {
@@ -268,8 +245,9 @@ pub(crate) fn init_psram(config: &mut PsramConfig) -> bool {
     true
 }
 
+#[cfg(not(code_in_psram))]
 #[procmacros::ram]
-pub(crate) fn map_psram(config: PsramConfig) -> Range<usize> {
+pub(crate) fn map_psram(config: PsramConfig) -> core::ops::Range<usize> {
     const MMU_PAGE_SIZE: u32 = property!("mmu.page_size");
     const FLASH_MMU_TABLE_SIZE: u32 = property!("mmu.entry_num");
 
@@ -317,6 +295,119 @@ pub(crate) fn map_psram(config: PsramConfig) -> Range<usize> {
     enable_cache_buses();
 
     start as usize..start as usize + config.size.get()
+}
+
+#[cfg(code_in_psram)]
+pub(crate) use start::*;
+
+/// Code in PSRAM: the ESP32-C5's parts of the start-up in [`super::code_in_psram`].
+///
+/// Flash and PSRAM share the ESP32-C5's MMU. The start-up runs from flash at pre-init, before
+/// `soc::pre_init`, and only its remap runs from RAM.
+#[cfg(code_in_psram)]
+mod start {
+    use super::*;
+    use crate::{peripherals::PCR, psram::code_in_psram::stop};
+
+    pub(crate) const FLASH_WINDOW: u32 = EXTMEM_ORIGIN as u32;
+    pub(crate) const FLASH_VALID: u32 = 1 << 10;
+    pub(crate) const FLASH_SENSITIVE: u32 = 1 << 11;
+    pub(crate) const FLASH_PSRAM: u32 = 1 << 9;
+    pub(crate) const FLASH_PADDR: u32 = 0x1ff;
+    pub(crate) const IMAGE_CHIP_ID: u32 = 0x0017;
+
+    /// The ESP32-C5's clock tree has no PSRAM or MSPI node, so the MSPI clock stays as the start-up
+    /// set it.
+    pub(crate) fn request_clock() {}
+
+    #[inline(always)]
+    pub(crate) fn flash_entry(i: u32) -> u32 {
+        SPI0::regs()
+            .mmu_item_index()
+            .write(|w| unsafe { w.bits(i) });
+        SPI0::regs().mmu_item_content().read().bits()
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_flash_entry(i: u32, content: u32) {
+        SPI0::regs()
+            .mmu_item_index()
+            .write(|w| unsafe { w.bits(i) });
+        SPI0::regs()
+            .mmu_item_content()
+            .write(|w| unsafe { w.bits(content) });
+    }
+
+    #[inline(always)]
+    pub(crate) fn flash_entry_maps_psram(content: u32) -> bool {
+        content & FLASH_PSRAM != 0
+    }
+
+    /// The ESP32-C5's MMU has 64 KiB pages only.
+    ///
+    /// See <https://github.com/espressif/esp-idf/blob/383dda6c182/components/esp_hal_cache/esp32c5/include/hal/mmu_ll.h#L82-L86>.
+    #[inline(always)]
+    pub(crate) fn flash_page_shift() -> u32 {
+        16
+    }
+
+    #[inline(always)]
+    pub(crate) fn efuse_block0() -> u32 {
+        crate::peripherals::EFUSE::regs().rd_wr_dis0().as_ptr() as u32
+    }
+
+    #[inline(always)]
+    pub(crate) fn cache_writeback(addr: u32, size: u32) {
+        unsafe { crate::soc::cache_writeback_addr(addr, size) };
+    }
+
+    #[inline(always)]
+    pub(crate) fn cache_invalidate(addr: u32, size: u32) {
+        unsafe { crate::soc::cache_invalidate_addr(addr, size) };
+    }
+
+    #[inline(always)]
+    pub(crate) fn park_other_core() {}
+
+    /// Starts flash and PSRAM at 40 MHz and returns the PSRAM size.
+    pub(crate) fn start_psram() -> usize {
+        // Without this write, a stop that ends in an RTC watchdog reset can freeze the MSPI bus.
+        // `soc::pre_init` makes the same write, but it runs after the start-up.
+        PCR::regs()
+            .reset_event_bypass()
+            .modify(|_, w| w.reset_event_bypass().clear_bit());
+        // `mspi_timing_ll_set_core_clock` assumes that the root clock is a PLL: 2 selects
+        // PLL_F160M, and 3 selects PLL_F240M.
+        // See <https://github.com/espressif/esp-idf/blob/383dda6c182/components/esp_hal_clock/esp32c5/include/hal/clk_tree_ll.h#L371-L387>.
+        if PCR::regs().sysclk_conf().read().soc_clk_sel().bits() < 2 {
+            stop(0x103);
+        }
+        // 40 MHz needs no timing tuning, so the start-up does not depend on the board's tuning.
+        let mut config = PsramConfig {
+            flash_frequency: FlashFreq::FlashFreq40m,
+            ram_frequency: SpiRamFreq::Freq40m,
+            ..PsramConfig::default()
+        };
+        init_psram(&mut config);
+        let size = config.size.get();
+        if size == 0 {
+            stop(0x104);
+        }
+        enable_cache_buses();
+        size
+    }
+
+    /// Sets the flash and PSRAM frequencies and the timing tuning of `config`.
+    pub(crate) fn set_rate(config: &PsramConfig) {
+        let (low_speed, flash, psram) = clock_regs(config);
+        // Nothing may fetch from flash or PSRAM while the clocks change.
+        critical_section::with(|_| quad::set_clocks(config, low_speed, flash, psram));
+        info!(
+            "PSRAM clock {} MHz, flash clock {} MHz",
+            config.ram_frequency.mhz(),
+            config.flash_frequency.mhz()
+        );
+    }
 }
 
 mod ctrlr_ll {
@@ -423,6 +514,40 @@ mod ctrlr_ll {
             w
         });
     }
+}
+
+/// Returns the clock register values for the low-speed mode, for flash, and for PSRAM.
+///
+/// The register setters keep only the bits of each field, so a value out of range must fail here,
+/// before the MSPI timing changes. The tuning values apply only when the PSRAM frequency needs
+/// timing tuning. The division and the assertions have panic paths in flash, so the values are
+/// calculated before the MSPI clocks change.
+fn clock_regs(config: &PsramConfig) -> (u32, u32, u32) {
+    #[cfg(psram_has_timing_tuning)]
+    if config.ram_frequency.need_timing_tuning() {
+        for param in [config.flash_tuning, config.ram_tuning] {
+            assert!(param.spi_din_mode <= 7);
+            assert!(param.spi_din_num <= 3);
+        }
+    }
+
+    // The flash and PSRAM frequency while the MSPI timing changes.
+    const LOW_SPEED_MHZ: u32 = 20;
+
+    (
+        clock_reg(
+            LOW_SPEED_MHZ,
+            MspiTimingSpeedMode::MspiTimingSpeedModeLowPerf,
+        ),
+        clock_reg(
+            config.flash_frequency.mhz(),
+            MspiTimingSpeedMode::MspiTimingSpeedModeNormalPerf,
+        ),
+        clock_reg(
+            config.ram_frequency.mhz(),
+            MspiTimingSpeedMode::MspiTimingSpeedModeNormalPerf,
+        ),
+    )
 }
 
 /// Returns the clock register value that divides the MSPI core clock of `speed_mode` to

@@ -17,7 +17,9 @@
 //!
 //! On a chip with two cores and with code in PSRAM, two more checks request a light sleep on one
 //! core during a flash erase on the other. The light sleep must be refused, and the same light
-//! sleep after the erase must not be refused. A check that misses the erase tries again.
+//! sleep after the erase must not be refused. On a chip with one core and with code in PSRAM, a
+//! light sleep that an esp-rtos thread requests during an erase in a lower-priority thread must
+//! be refused. A check that misses the erase tries again.
 //!
 //! The program keeps its progress in memory that a reset does not clear:
 //!
@@ -39,15 +41,17 @@
 #![no_main]
 
 #[cfg(multi_core)]
+use core::sync::atomic::AtomicU32;
+#[cfg(any(multi_core, code_in_psram))]
 use core::{
     ptr::addr_of_mut,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use esp_backtrace as _;
 #[cfg(multi_core)]
 use esp_hal::system::{CpuControl, Stack};
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 use esp_hal::{
     Blocking,
     flash::{Config as FlashConfig, Flash},
@@ -67,7 +71,7 @@ use esp_hal::{
     time::{Duration, Instant},
 };
 use qa_test::{Progress, ProgressWord, report};
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 use qa_test::{flash_operation, scratch_blocks};
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -132,7 +136,8 @@ impl Check {
 /// The checks, in the order they run.
 ///
 /// CPU retention cannot be removed after installation. A check without CPU retention must come
-/// before the checks with it at the same CPU clock.
+/// before the checks with it at the same CPU clock. esp-rtos cannot be stopped, so a check that
+/// starts esp-rtos must be the last.
 const CHECKS: &[Check] = &[
     Check {
         name: "light sleep at the default CPU clock",
@@ -191,6 +196,12 @@ const CHECKS: &[Check] = &[
         name: "light sleep from core 1 with CPU retention at the maximum CPU clock",
         clock: Clock::Max,
         run: light_sleep_from_core1_with_retention,
+    },
+    #[cfg(all(not(multi_core), code_in_psram))]
+    Check {
+        name: "light sleep from an esp-rtos thread during an erase",
+        clock: Clock::Default,
+        run: light_sleep_from_a_thread_during_an_erase,
     },
 ];
 
@@ -450,38 +461,38 @@ fn light_sleep_from_core1_with_retention(board: &mut Board<'_>) -> Result<(), &'
     sleep_and_check(board, request_on_core1)
 }
 
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 const BLOCK: u32 = 0x1_0000;
 
 /// The hang bound on one block erase, 1 s less than the RTC watchdog's 5 s. A check feeds the
 /// watchdog before each erase.
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 const ERASE_BOUND: Duration = Duration::from_secs(4);
 
 /// The erases that a check tries before it fails.
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 const ATTEMPTS: u32 = 8;
 
 /// The flash, and the block that the checks erase. Core 1 uses it only in its `ERASE` command, and
 /// core 0 only while core 1 does not run that command.
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 static mut FLASH: Option<(Flash<'static, Blocking>, u32)> = None;
 
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 static ERASING: AtomicBool = AtomicBool::new(false);
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 static ERASE_DONE: AtomicBool = AtomicBool::new(false);
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 static ERASE_OK: AtomicBool = AtomicBool::new(false);
 /// Whether [`may_sleep`] ran, and whether it found a flash operation in progress.
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 static CONDITION_RAN: AtomicBool = AtomicBool::new(false);
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 static HELD_IN_CONDITION: AtomicBool = AtomicBool::new(false);
 
 /// The pattern for [`write_block`]. A nonzero `static mut` is in internal RAM, where a ROM flash
 /// routine can read it.
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 static mut BLOCK_PATTERN: [u32; 4096] = [0x5AA5_C33C; 4096];
 
 /// The condition of the checks' light sleeps. The light sleep calls it only after its flash check
@@ -514,7 +525,7 @@ fn outcome(result: LightSleep) -> Result<Outcome, &'static str> {
 }
 
 /// Erases the block of [`FLASH`], and returns whether the erase succeeded.
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 fn erase() -> bool {
     // SAFETY: the caller is the only user of `FLASH` until the erase ends.
     let Some((flash, block)) = (unsafe { (*addr_of_mut!(FLASH)).as_mut() }) else {
@@ -529,7 +540,7 @@ fn erase() -> bool {
 }
 
 /// Writes the pattern over the block of [`FLASH`]. A written block takes longer to erase.
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 fn write_block() {
     // SAFETY: the caller is the only user of `FLASH` until the write ends.
     let Some((flash, block)) = (unsafe { (*addr_of_mut!(FLASH)).as_mut() }) else {
@@ -558,7 +569,7 @@ fn wait_for_erase(eraser: Cpu) -> bool {
     }
 }
 
-#[cfg(all(multi_core, code_in_psram))]
+#[cfg(code_in_psram)]
 fn clear_erase_flags() {
     ERASING.store(false, Ordering::Relaxed);
     ERASE_DONE.store(false, Ordering::Relaxed);
@@ -660,6 +671,88 @@ fn refused_during_core0_erase(board: &mut Board<'_>) -> Result<(), &'static str>
     Err("core 1 requested no light sleep inside the erase")
 }
 
+/// A low-priority esp-rtos thread erases, and this thread, at a higher priority, requests light
+/// sleeps inside the erase. Each light sleep must be refused. After the erase, a light
+/// sleep must pass the checks of [`sleep_and_check`].
+///
+/// The erasing thread runs only while this thread blocks, and it is the only flash user. So when
+/// this thread finds `ERASING` set and a flash operation in progress, the erasing thread is inside
+/// its erase, and stays there until this thread blocks again.
+#[cfg(all(not(multi_core), code_in_psram))]
+fn light_sleep_from_a_thread_during_an_erase(board: &mut Board<'_>) -> Result<(), &'static str> {
+    use core::sync::atomic::AtomicU32;
+
+    use esp_rtos::{
+        CurrentThreadHandle,
+        thread::{Stack, ThreadSpawner},
+    };
+    use static_cell::ConstStaticCell;
+
+    static ERASER_STACK: ConstStaticCell<Stack<8192>> = ConstStaticCell::new(Stack::new());
+    /// The erases that this thread asked for, and the erases that the erasing thread finished.
+    static ASKED: AtomicU32 = AtomicU32::new(0);
+    static FINISHED: AtomicU32 = AtomicU32::new(0);
+    /// How often this thread checks for the erase.
+    const POLL: Duration = Duration::from_micros(200);
+
+    // SAFETY: nothing else in the program uses TIMG0.
+    let timg0 =
+        esp_hal::timer::timg::TimerGroup::new(unsafe { esp_hal::peripherals::TIMG0::steal() });
+    esp_rtos::start(timg0.timer0);
+
+    CurrentThreadHandle::get().set_priority(2);
+    // The stack can be taken once, so one thread makes every attempt's erase.
+    ThreadSpawner::from_static(ERASER_STACK.take())
+        .with_priority(1)
+        .spawn(|| {
+            loop {
+                if ASKED.load(Ordering::Acquire) != FINISHED.load(Ordering::Relaxed) {
+                    ERASE_OK.store(erase(), Ordering::Release);
+                    FINISHED.fetch_add(1, Ordering::Release);
+                } else {
+                    CurrentThreadHandle::get().delay(POLL);
+                }
+            }
+        })
+        .detach();
+
+    for _ in 0..ATTEMPTS {
+        clear_erase_flags();
+        // Before the erase is asked for, so that the write is never under `ERASING`.
+        write_block();
+        // The watchdog's 5 s start here, for the erase alone.
+        board.rtc.rwdt.feed();
+        let asked = ASKED.fetch_add(1, Ordering::Release) + 1;
+
+        let mut requests = 0u32;
+        let end = Instant::now() + ERASE_BOUND;
+        while FINISHED.load(Ordering::Acquire) != asked {
+            if Instant::now() > end {
+                return Err("the erasing thread did not finish its erase");
+            }
+            if ERASING.load(Ordering::Acquire) && flash_operation() != 0 {
+                requests += 1;
+                board
+                    .lpwr
+                    .set_wakeup_deadline(Instant::now() + SLEEP_LENGTH);
+                if board.lpwr.sleep_light(RtcSleepConfig::default()) != LightSleep::Refused {
+                    report!("  light sleep {requests} inside the erase was not refused");
+                    return Err("a light sleep inside the erase was not refused");
+                }
+            }
+            CurrentThreadHandle::get().delay(POLL);
+        }
+        if !ERASE_OK.load(Ordering::Acquire) {
+            return Err("the erase failed");
+        }
+        if requests > 0 {
+            report!("  {requests} light sleeps were refused inside the erase");
+            return sleep_and_check(board, request_on_core0);
+        }
+    }
+    Err("no light sleep was requested inside the erase")
+}
+
 /// Returns the index of the first check at or after `index` that runs on this chip.
 fn next_check(index: usize) -> usize {
     (index..CHECKS.len())
@@ -720,7 +813,7 @@ fn main() -> ! {
     let psram: &'static mut [u32] = &mut [];
     report!("PSRAM: {} KiB", psram.len() / 256);
 
-    #[cfg(all(multi_core, code_in_psram))]
+    #[cfg(code_in_psram)]
     {
         let mut flash = Flash::new(peripherals.FLASH, FlashConfig::default()).unwrap();
         let block = scratch_blocks(&mut flash, 1);
