@@ -12,8 +12,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // `#[psram(zeroed)]`, which `sleep-checks` uses, fails to compile without esp-hal's
-    // `code-in-psram`, so it needs a cfg.
+    // esp-hal's flash value exists only with esp-hal's `code-in-psram`, and `#[psram(zeroed)]`
+    // fails to compile without it. So `qa_test::flash_operation` and `sleep-checks` need a cfg.
+    // `qa_test::code_in_psram` returns the cfg.
     println!("cargo:rustc-check-cfg=cfg(code_in_psram)");
     println!("cargo:rerun-if-env-changed=ESP_HAL_CONFIG_CODE_IN_PSRAM");
     if std::env::var("ESP_HAL_CONFIG_CODE_IN_PSRAM").as_deref() == Ok("true") {

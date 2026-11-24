@@ -233,7 +233,8 @@ options:
   - name: code-in-psram
     description: "Run `.text` and `.rodata` from PSRAM. Flash operations then leave interrupts and
       the caches on, and do not park the other core. esp-hal must be built at opt-level 2 or 3. With
-      flash encryption, the code in PSRAM is plaintext."
+      flash encryption, the code in PSRAM is plaintext. esp-storage is not compatible with this
+      option."
     default:
       - value: false
     active: "psram_supports_code_in_psram"

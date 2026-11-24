@@ -289,6 +289,111 @@ macro_rules! mk_static {
     }};
 }
 
+#[cfg(code_in_psram)]
+pub use flash_value::{assert_flash_value_marks, flash_operation};
+
+/// esp-hal's flash value, with code in PSRAM.
+#[cfg(code_in_psram)]
+mod flash_value {
+    use core::{
+        cell::RefCell,
+        sync::atomic::{AtomicU32, Ordering},
+    };
+
+    use critical_section::Mutex;
+    use esp_hal::{Blocking, handler, system::Cpu, time::Duration, timer::PeriodicTimer};
+
+    unsafe extern "Rust" {
+        /// esp-hal's flash value: 0 while no flash operation is in progress, otherwise one more
+        /// than the number of the core that started the operation. Bit 7 marks a stop of the APP
+        /// core that waits for the end of the APP core's operation.
+        static ESP_HAL_FLASH_OPERATION: portable_atomic::AtomicU32;
+    }
+
+    /// Returns esp-hal's flash value.
+    pub fn flash_operation() -> u32 {
+        // SAFETY: esp-hal defines the static.
+        unsafe { ESP_HAL_FLASH_OPERATION.load(Ordering::Acquire) }
+    }
+
+    /// The samples that must name the core of the operation.
+    const SAMPLES_MIN: u32 = 10;
+
+    static TIMER: Mutex<RefCell<Option<PeriodicTimer<'static, Blocking>>>> =
+        Mutex::new(RefCell::new(None));
+    static INSIDE: AtomicU32 = AtomicU32::new(0);
+    static WRONG: AtomicU32 = AtomicU32::new(0);
+
+    #[handler]
+    fn sample() {
+        critical_section::with(|cs| {
+            if let Some(timer) = TIMER.borrow_ref_mut(cs).as_mut() {
+                timer.clear_interrupt();
+            }
+        });
+        match flash_operation() {
+            0 => {}
+            value if value == Cpu::current() as u32 + 1 => {
+                INSIDE.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {
+                WRONG.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Runs `operation` on the current core while `timer` samples the flash value every 100 µs.
+    /// Asserts that the value named the current core in at least [`SAMPLES_MIN`] samples, never
+    /// named another core, and is 0 after the operation. Returns the timer.
+    ///
+    /// Pass a SYSTIMER alarm: on the C5, a TIMG0 interrupt that an earlier test left enabled stays
+    /// pending across the reset between tests.
+    pub fn assert_flash_value_marks(
+        mut timer: PeriodicTimer<'static, Blocking>,
+        operation: impl FnOnce(),
+        what: &str,
+    ) -> PeriodicTimer<'static, Blocking> {
+        INSIDE.store(0, Ordering::Relaxed);
+        WRONG.store(0, Ordering::Relaxed);
+        timer.set_interrupt_handler(sample);
+        critical_section::with(|cs| {
+            let mut stored = TIMER.borrow_ref_mut(cs);
+            let timer = stored.insert(timer);
+            timer.listen();
+            timer.start(Duration::from_micros(100)).unwrap();
+        });
+        operation();
+        // Stop the alarm while the timer is still in `TIMER`. The handler clears the interrupt only
+        // through `TIMER`, and the interrupt is level-triggered.
+        let timer = critical_section::with(|cs| {
+            let mut stored = TIMER.borrow_ref_mut(cs);
+            let timer = stored.as_mut().unwrap();
+            timer.cancel().unwrap();
+            timer.unlisten();
+            timer.clear_interrupt();
+            stored.take()
+        })
+        .unwrap();
+
+        let inside = INSIDE.load(Ordering::Relaxed);
+        defmt::info!("the {}: {} samples", what, inside);
+        assert_eq!(flash_operation(), 0, "the flash value after the {}", what);
+        assert_eq!(
+            WRONG.load(Ordering::Relaxed),
+            0,
+            "the flash value named another core during the {}",
+            what
+        );
+        assert!(
+            inside >= SAMPLES_MIN,
+            "the flash value named the core in {} samples during the {}",
+            inside,
+            what
+        );
+        timer
+    }
+}
+
 // A simple looping executor to test async code without esp-hal-embassy (which
 // needs `esp-hal/unstable`).
 #[cfg(not(feature = "embassy"))]
