@@ -138,8 +138,7 @@ pub fn ram(args: TokenStream, input: TokenStream) -> TokenStream {
 
 /// Places a `static` in PSRAM.
 ///
-/// Needs esp-hal's `unstable` feature and its `code-in-psram` option, on a chip whose PSRAM has
-/// its own address window, such as the ESP32-S31.
+/// Needs esp-hal's `unstable` feature and its `code-in-psram` option.
 ///
 /// The option `zeroed` is required: the start-up zeroes the `static` before `main`. The compiler
 /// rejects an initializer that is not all zero bytes.
